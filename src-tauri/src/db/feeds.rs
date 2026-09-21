@@ -1,6 +1,6 @@
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 use super::{
@@ -296,6 +296,83 @@ pub fn list_feeds(connection: &Connection) -> Result<Vec<FeedRecord>, String> {
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to read feed row: {error}"))
+}
+
+/// Lean feed row for scheduler planning — omits favicon/image/description/podcast blobs.
+#[derive(Debug, Clone)]
+pub struct SchedulerFeedRow {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub last_fetched: Option<String>,
+    pub last_failed_fetch_at: Option<String>,
+    pub sort_order: i64,
+    pub update_frequency_score: f64,
+    pub consecutive_failures: i64,
+}
+
+impl SchedulerFeedRow {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get("id")?,
+            title: row.get("title")?,
+            url: row.get("url")?,
+            last_fetched: row.get("last_fetched")?,
+            last_failed_fetch_at: row.get("last_failed_fetch_at")?,
+            sort_order: row.get("sort_order")?,
+            update_frequency_score: row.get("update_frequency_score")?,
+            consecutive_failures: row.get("consecutive_failures")?,
+        })
+    }
+}
+
+/// Scheduler planning list: only columns needed for priority / backoff decisions.
+pub fn list_scheduler_feed_entries(
+    connection: &Connection,
+) -> Result<Vec<SchedulerFeedRow>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+              id, title, url, last_fetched, last_failed_fetch_at,
+              sort_order, update_frequency_score, consecutive_failures
+            FROM feeds
+            ORDER BY sort_order ASC, title COLLATE NOCASE
+            "#,
+        )
+        .map_err(|error| format!("Failed to prepare scheduler feed list query: {error}"))?;
+    let rows = statement
+        .query_map([], SchedulerFeedRow::from_row)
+        .map_err(|error| format!("Failed to query scheduler feeds: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to read scheduler feed row: {error}"))
+}
+
+/// Load full feed rows only for the requested IDs (empty input → empty map).
+pub fn get_feeds_by_ids(
+    connection: &Connection,
+    ids: &[String],
+) -> Result<HashMap<String, FeedRecord>, String> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT * FROM feeds WHERE id IN ({placeholders})");
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| format!("Failed to prepare feeds-by-ids query: {error}"))?;
+    let rows = statement
+        .query_map(params_from_iter(ids.iter()), FeedRecord::from_row)
+        .map_err(|error| format!("Failed to query feeds by ids: {error}"))?;
+
+    let mut feeds = HashMap::with_capacity(ids.len());
+    for row in rows {
+        let feed = row.map_err(|error| format!("Failed to read feed row: {error}"))?;
+        feeds.insert(feed.id.clone(), feed);
+    }
+    Ok(feeds)
 }
 
 /// Catalog rows for sidebar first paint: omit favicon/image/podcast blobs.

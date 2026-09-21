@@ -12,12 +12,15 @@ export const SCHEDULER_NATIVE_CYCLE_COMPLETE_EVENT = "scheduler:native-cycle-com
 export interface SchedulerNativeCycleStartPayload {
   queuedCount: number;
   feedIds: string[];
+  cycleId?: string;
 }
 
 export interface SchedulerNativeCycleFeedPayload {
   feedId: string;
   insertedCount?: number;
   error?: string;
+  cycleId?: string;
+  requestId?: string;
 }
 
 export function isNativeFeedIngestionEnabled(): boolean {
@@ -57,6 +60,7 @@ export function buildNativeCycleRequest(input: {
   forceRefreshFeedIds?: ReadonlySet<string>;
   concurrency: number;
   now?: number;
+  cycleId?: string;
 }): SchedulerNativeCyclePreviewRequest {
   return {
     boosts: buildNativeCycleBoosts(input.boosts),
@@ -69,6 +73,7 @@ export function buildNativeCycleRequest(input: {
     ),
     concurrency: input.concurrency,
     execute: true,
+    cycleId: input.cycleId,
   };
 }
 

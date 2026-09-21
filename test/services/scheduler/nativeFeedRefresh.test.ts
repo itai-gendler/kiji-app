@@ -22,13 +22,14 @@ vi.mock("@/services/feeds/feedRefreshActivity", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (_event, handler) => {
     if (_event === "scheduler:native-cycle-start") {
-      handler({ payload: { feedIds: ["feed-1"], queuedCount: 1 } });
+      handler({ payload: { feedIds: ["feed-1"], queuedCount: 1, cycleId: "native-7" } });
     }
     if (_event === "scheduler:native-cycle-feed") {
       handler({
         payload: {
           feedId: "feed-1",
           insertedCount: 2,
+          cycleId: "native-7",
         },
       });
     }
@@ -55,15 +56,17 @@ describe("nativeFeedRefresh", () => {
     });
   });
 
-  it("invokes previewNativeCycle with scoped force refresh ids", async () => {
+    it("invokes previewNativeCycle with scoped force refresh ids", async () => {
     const result = await runNativeFeedRefresh({
       feedIds: ["feed-1"],
       forceRefreshFeedIds: new Set(["feed-1"]),
+      cycleId: "native-7",
     });
 
     expect(previewNativeCycle).toHaveBeenCalledWith(
       expect.objectContaining({
         execute: true,
+        cycleId: "native-7",
         options: expect.objectContaining({
           onlyFeedIds: ["feed-1"],
           forceRefreshFeedIds: ["feed-1"],
@@ -75,11 +78,46 @@ describe("nativeFeedRefresh", () => {
     expect(beginQueuedFeeds).toHaveBeenCalledWith(["feed-1"], "foreground");
   });
 
+  it("ignores START/FEED events for a different cycleId", async () => {
+    const { listen } = await import("@tauri-apps/api/event");
+    const handlers: Array<(event: { payload: unknown }) => void> = [];
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      handlers.push(handler as (event: { payload: unknown }) => void);
+      return vi.fn();
+    });
+
+    const onFeedComplete = vi.fn();
+    const pending = runNativeFeedRefresh({
+      feedIds: ["feed-1"],
+      cycleId: "native-a",
+      onFeedComplete,
+    });
+
+    for (let i = 0; i < 20 && handlers.length < 2; i++) {
+      await Promise.resolve();
+    }
+
+    handlers[0]?.({ payload: { feedIds: ["feed-1"], queuedCount: 1, cycleId: "native-b" } });
+    handlers[1]?.({ payload: { feedId: "feed-1", insertedCount: 9, cycleId: "native-b" } });
+    expect(beginQueuedFeeds).not.toHaveBeenCalled();
+    expect(onFeedComplete).not.toHaveBeenCalled();
+
+    handlers[0]?.({ payload: { feedIds: ["feed-1"], queuedCount: 1, cycleId: "native-a" } });
+    handlers[1]?.({ payload: { feedId: "feed-1", insertedCount: 2, cycleId: "native-a" } });
+    expect(beginQueuedFeeds).toHaveBeenCalledWith(["feed-1"], "foreground");
+    expect(onFeedComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ feedId: "feed-1", insertedCount: 2, cycleId: "native-a" }),
+    );
+
+    await pending;
+  });
+
   it("skips activity queue when the caller already reserved foreground slots", async () => {
     await runNativeFeedRefresh({
       feedIds: ["feed-1"],
       forceRefreshFeedIds: new Set(["feed-1"]),
       skipActivityQueue: true,
+      cycleId: "native-7",
     });
 
     expect(beginQueuedFeeds).not.toHaveBeenCalled();

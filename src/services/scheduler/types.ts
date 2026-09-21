@@ -30,8 +30,12 @@ export type SchedulerEventType =
   | 'feed-failed';
 
 export type SchedulerEvent =
-  | { type: 'cycle-start' }
-  | { type: 'cycle-complete' }
+  | { type: 'cycle-start'; cycleId?: number }
+  | { type: 'cycle-complete'; cycleId?: number }
   | { type: 'feed-updated'; feedId: string; newArticleCount?: number }
-  | { type: 'feeds-batch-updated'; updates: ReadonlyArray<{ feedId: string; newArticleCount: number }> }
+  | {
+      type: 'feeds-batch-updated';
+      updates: ReadonlyArray<{ feedId: string; newArticleCount: number }>;
+      cycleId?: number;
+    }
   | { type: 'feed-failed'; feedId: string; error?: string };

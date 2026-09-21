@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::db::FeedRecord;
+use crate::db::{FeedRecord, SchedulerFeedRow};
 use crate::scheduler::priority::compute_priority;
 use crate::scheduler::refresh_policy::is_scheduler_entry_in_backoff;
 use crate::scheduler::types::{
-    SchedulerBoost, SchedulerCreateRunPlanRequest, SchedulerFeedEntry,
-    SchedulerRunPlan, SchedulerRunPlanOptions,
+    SchedulerBoost, SchedulerCreateRunPlanRequest, SchedulerFeedEntry, SchedulerRunPlan,
+    SchedulerRunPlanOptions,
 };
 
 pub fn scheduler_feed_entry_from_record(feed: &FeedRecord) -> SchedulerFeedEntry {
@@ -21,6 +21,19 @@ pub fn scheduler_feed_entry_from_record(feed: &FeedRecord) -> SchedulerFeedEntry
     }
 }
 
+pub fn scheduler_feed_entry_from_scheduler_row(row: &SchedulerFeedRow) -> SchedulerFeedEntry {
+    SchedulerFeedEntry {
+        feed_id: row.id.clone(),
+        feed_url: row.url.clone(),
+        feed_title: row.title.clone(),
+        last_fetched_ms: parse_timestamp_ms(row.last_fetched.as_deref()),
+        last_failed_fetch_at_ms: parse_timestamp_ms(row.last_failed_fetch_at.as_deref()),
+        sort_order: row.sort_order,
+        update_frequency_score: row.update_frequency_score,
+        consecutive_failures: row.consecutive_failures,
+    }
+}
+
 pub fn create_scheduler_run_plan(
     entries: &[SchedulerFeedEntry],
     total_feeds: usize,
@@ -28,29 +41,42 @@ pub fn create_scheduler_run_plan(
     now_ms: i64,
     options: &SchedulerRunPlanOptions,
 ) -> SchedulerRunPlan {
+    let only_feed_ids = option_ids_to_set(options.only_feed_ids.as_ref());
+    let exclude_feed_ids = option_ids_to_set(options.exclude_feed_ids.as_ref());
+    let skip_feed_ids = option_ids_to_set(options.skip_feed_ids_for_this_cycle.as_ref());
+    let force_refresh_feed_ids = option_ids_to_set(options.force_refresh_feed_ids.as_ref());
+    let frontload_feed_ids = option_ids_to_set(options.frontload_feed_ids.as_ref());
+
     let mut prioritized = Vec::new();
     let mut skipped_backoff_count = 0;
     let mut skipped_suppressed_count = 0;
 
     for entry in entries {
-        if contains_id(options.only_feed_ids.as_ref(), &entry.feed_id) == Some(false) {
-            continue;
+        if let Some(ref only) = only_feed_ids {
+            if !only.contains(&entry.feed_id) {
+                continue;
+            }
         }
 
-        if contains_id(options.exclude_feed_ids.as_ref(), &entry.feed_id) == Some(true) {
-            continue;
+        if let Some(ref exclude) = exclude_feed_ids {
+            if exclude.contains(&entry.feed_id) {
+                continue;
+            }
         }
 
-        if contains_id(options.skip_feed_ids_for_this_cycle.as_ref(), &entry.feed_id) == Some(true)
-        {
-            skipped_suppressed_count += 1;
-            continue;
+        if let Some(ref skip) = skip_feed_ids {
+            if skip.contains(&entry.feed_id) {
+                skipped_suppressed_count += 1;
+                continue;
+            }
         }
 
+        let force_refresh = force_refresh_feed_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&entry.feed_id));
         if is_scheduler_entry_in_backoff(entry, now_ms)
             && !options.bypass_failure_backoff.unwrap_or(false)
-            && !contains_id(options.force_refresh_feed_ids.as_ref(), &entry.feed_id)
-                .unwrap_or(false)
+            && !force_refresh
         {
             skipped_backoff_count += 1;
             continue;
@@ -65,8 +91,8 @@ pub fn create_scheduler_run_plan(
     }
 
     prioritized.sort_by(|left, right| {
-        let left_frontloaded = is_frontloaded(options, &left.entry.feed_id);
-        let right_frontloaded = is_frontloaded(options, &right.entry.feed_id);
+        let left_frontloaded = is_frontloaded(frontload_feed_ids.as_ref(), &left.entry.feed_id);
+        let right_frontloaded = is_frontloaded(frontload_feed_ids.as_ref(), &right.entry.feed_id);
         match left_frontloaded.cmp(&right_frontloaded).reverse() {
             std::cmp::Ordering::Equal => right
                 .score
@@ -107,12 +133,12 @@ pub fn boosts_to_map(boosts: Vec<SchedulerBoost>) -> HashMap<String, i64> {
         .collect()
 }
 
-fn is_frontloaded(options: &SchedulerRunPlanOptions, feed_id: &str) -> bool {
-    contains_id(options.frontload_feed_ids.as_ref(), feed_id) == Some(true)
+fn is_frontloaded(frontload_feed_ids: Option<&HashSet<String>>, feed_id: &str) -> bool {
+    frontload_feed_ids.is_some_and(|ids| ids.contains(feed_id))
 }
 
-fn contains_id(ids: Option<&Vec<String>>, feed_id: &str) -> Option<bool> {
-    ids.map(|values| values.iter().any(|value| value == feed_id))
+fn option_ids_to_set(ids: Option<&Vec<String>>) -> Option<HashSet<String>> {
+    ids.map(|values| values.iter().cloned().collect())
 }
 
 fn parse_timestamp_ms(value: Option<&str>) -> Option<i64> {

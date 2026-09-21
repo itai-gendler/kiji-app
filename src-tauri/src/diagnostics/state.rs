@@ -10,7 +10,8 @@ use std::{
 };
 use tauri::Manager;
 
-const LOG_RETENTION_DAYS: u64 = 2;
+// Keep enough days for the multi-day memory soak without requiring manual export every night.
+const LOG_RETENTION_DAYS: u64 = 7;
 const MAX_RECENT_ENTRIES: usize = 500;
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
@@ -57,8 +58,12 @@ pub struct ResourceTotalsSnapshot {
     pub cpu: f64,
     pub memory_mb: f64,
     pub native_memory_mb: f64,
+    /// App-owned WebKit helpers only (parent-chain related to this process).
     pub webkit_memory_mb: f64,
+    /// System-wide WebKit estimate (Safari/Mail/etc.). Never use as a soak gate.
+    pub system_webkit_memory_mb: f64,
     pub process_count: usize,
+    pub attribution_confidence: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

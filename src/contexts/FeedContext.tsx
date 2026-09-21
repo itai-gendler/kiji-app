@@ -930,6 +930,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const pendingBackgroundRefreshSourceKeyRef = useRef<string | null>(null);
   const sourceArticleSnapshotCacheRef = useRef<Map<string, SourceArticleListSnapshot>>(new Map());
   const pendingSchedulerFeedUpdatesRef = useRef<Map<string, number>>(new Map());
+  const activeSchedulerCycleIdRef = useRef<number | null>(null);
   const schedulerUiBatchTimerRef = useRef<number | null>(null);
   const schedulerUiFlushInFlightRef = useRef(false);
   const schedulerUiFlushQueuedRef = useRef(false);
@@ -4154,7 +4155,20 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }));
 
     const unsubscribe = feedScheduler.on((event) => {
+      if (event.type === 'cycle-start') {
+        if (typeof event.cycleId === 'number') {
+          activeSchedulerCycleIdRef.current = event.cycleId;
+        }
+        return;
+      }
+
       if (event.type === 'cycle-complete') {
+        if (
+          typeof event.cycleId === 'number'
+          && activeSchedulerCycleIdRef.current === event.cycleId
+        ) {
+          activeSchedulerCycleIdRef.current = null;
+        }
         void flushSchedulerUiUpdates(true);
         return;
       }
@@ -4164,6 +4178,13 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // cycle-complete flush right after consumes these pending updates and
       // re-queries the visible list when the active source is affected.
       if (event.type === 'feeds-batch-updated') {
+        if (
+          typeof event.cycleId === 'number'
+          && activeSchedulerCycleIdRef.current !== null
+          && event.cycleId !== activeSchedulerCycleIdRef.current
+        ) {
+          return;
+        }
         const pendingUpdates = pendingSchedulerFeedUpdatesRef.current;
         for (const update of event.updates) {
           const previousNewArticleCount = pendingUpdates.get(update.feedId) ?? 0;

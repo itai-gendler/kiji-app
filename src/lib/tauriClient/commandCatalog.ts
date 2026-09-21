@@ -122,6 +122,8 @@ export const tauriCommandCatalog: Record<
     { apiMethod: "startFeedScheduler", ipcChannel: "scheduler-start", kind: "invoke", targetCommand: "scheduler.start", rustCommand: "scheduler_start" },
     { apiMethod: "stopFeedScheduler", ipcChannel: "scheduler-stop", kind: "invoke", targetCommand: "scheduler.stop", rustCommand: "scheduler_stop" },
     { apiMethod: "reconfigureFeedScheduler", ipcChannel: "scheduler-reconfigure", kind: "invoke", targetCommand: "scheduler.reconfigure", rustCommand: "scheduler_reconfigure" },
+    { apiMethod: "previewNativeCycle", ipcChannel: "scheduler-preview-native-cycle", kind: "invoke", targetCommand: "scheduler.previewNativeCycle", rustCommand: "scheduler_preview_native_cycle" },
+    { apiMethod: "cancelNativeCycle", ipcChannel: "scheduler-cancel-native-cycle", kind: "invoke", targetCommand: "scheduler.cancelNativeCycle", rustCommand: "scheduler_cancel_native_cycle" },
     { apiMethod: "onSchedulerCycleTick", ipcChannel: "scheduler:cycle-tick", kind: "event", targetCommand: "scheduler.onCycleTick" },
   ],
   settings: [

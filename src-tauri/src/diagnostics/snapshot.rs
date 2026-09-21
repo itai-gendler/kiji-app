@@ -58,12 +58,19 @@ fn process_snapshot_for(
     related_native_pids: &HashSet<Pid>,
 ) -> Option<ProcessSnapshot> {
     let name = process_name(process);
+    let command = process_command(process);
     let process_type = if pid == current_pid {
         "native".to_string()
     } else if related_native_pids.contains(&pid) {
-        "native-helper".to_string()
-    } else if let Some(webkit_type) = classify_webkit_process(&name, &process_command(process)) {
-        webkit_type.to_string()
+        if let Some(webkit_type) = classify_webkit_process(&name, &command) {
+            // Child/helper WebKit processes are app-owned.
+            format!("app-{webkit_type}")
+        } else {
+            "native-helper".to_string()
+        }
+    } else if let Some(webkit_type) = classify_webkit_process(&name, &command) {
+        // Unrelated WebKit (Safari/Mail/etc.) — tracked separately, never as app-owned.
+        format!("system-{webkit_type}")
     } else {
         return None;
     };
@@ -143,9 +150,38 @@ fn process_command(process: &Process) -> String {
 }
 
 fn resource_totals(processes: &[ProcessSnapshot]) -> ResourceTotalsSnapshot {
+    let app_owned: Vec<&ProcessSnapshot> = processes
+        .iter()
+        .filter(|process| {
+            process.process_type.starts_with("native")
+                || process.process_type.starts_with("app-webkit")
+        })
+        .collect();
+    let app_webkit_mb = round_one_decimal(
+        processes
+            .iter()
+            .filter(|process| process.process_type.starts_with("app-webkit"))
+            .map(|process| process.memory_mb)
+            .sum(),
+    );
+    let system_webkit_mb = round_one_decimal(
+        processes
+            .iter()
+            .filter(|process| process.process_type.starts_with("system-webkit"))
+            .map(|process| process.memory_mb)
+            .sum(),
+    );
+    let attribution_confidence = if app_webkit_mb > 0.0 {
+        "app-owned-parent-chain".to_string()
+    } else if system_webkit_mb > 0.0 {
+        "system-webkit-only-no-child-helpers".to_string()
+    } else {
+        "native-only".to_string()
+    };
+
     ResourceTotalsSnapshot {
-        cpu: round_one_decimal(processes.iter().map(|process| process.cpu).sum()),
-        memory_mb: round_one_decimal(processes.iter().map(|process| process.memory_mb).sum()),
+        cpu: round_one_decimal(app_owned.iter().map(|process| process.cpu).sum()),
+        memory_mb: round_one_decimal(app_owned.iter().map(|process| process.memory_mb).sum()),
         native_memory_mb: round_one_decimal(
             processes
                 .iter()
@@ -153,14 +189,10 @@ fn resource_totals(processes: &[ProcessSnapshot]) -> ResourceTotalsSnapshot {
                 .map(|process| process.memory_mb)
                 .sum(),
         ),
-        webkit_memory_mb: round_one_decimal(
-            processes
-                .iter()
-                .filter(|process| process.process_type.starts_with("webkit"))
-                .map(|process| process.memory_mb)
-                .sum(),
-        ),
-        process_count: processes.len(),
+        webkit_memory_mb: app_webkit_mb,
+        system_webkit_memory_mb: system_webkit_mb,
+        process_count: app_owned.len(),
+        attribution_confidence,
     }
 }
 
@@ -225,9 +257,16 @@ mod tests {
             ProcessSnapshot {
                 pid: 2,
                 name: "com.apple.WebKit.WebContent".to_string(),
-                process_type: "webkit-webcontent".to_string(),
+                process_type: "app-webkit-webcontent".to_string(),
                 cpu: 5.0,
                 memory_mb: 500.0,
+            },
+            ProcessSnapshot {
+                pid: 3,
+                name: "com.apple.WebKit.WebContent".to_string(),
+                process_type: "system-webkit-webcontent".to_string(),
+                cpu: 20.0,
+                memory_mb: 900.0,
             },
         ]);
 
@@ -235,6 +274,8 @@ mod tests {
         assert_eq!(totals.memory_mb, 600.0);
         assert_eq!(totals.native_memory_mb, 100.0);
         assert_eq!(totals.webkit_memory_mb, 500.0);
+        assert_eq!(totals.system_webkit_memory_mb, 900.0);
         assert_eq!(totals.process_count, 2);
+        assert_eq!(totals.attribution_confidence, "app-owned-parent-chain");
     }
 }

@@ -21,7 +21,9 @@ use types::{
     SchedulerCreateRunPlanRequest, SchedulerNativeCyclePreviewRequest,
     SchedulerNativeCyclePreviewResponse, SchedulerRunPlan,
 };
-use webview_delivery::{emit_scheduler_event_to_main_webview, TICK_WAKE_SCRIPT};
+use webview_delivery::{
+    emit_scheduler_wake_to_main_webview, TICK_WAKE_GLOBAL,
+};
 
 pub const SCHEDULER_CYCLE_TICK_EVENT: &str = "scheduler:cycle-tick";
 
@@ -84,7 +86,7 @@ impl FeedSchedulerState {
         }
 
         if mode == BackgroundUpdateMode::OnLaunch {
-            emit_cycle_tick(&app);
+            emit_cycle_tick(&app, 0);
             return Ok(SchedulerStartOutcome::Started);
         }
 
@@ -109,6 +111,10 @@ impl FeedSchedulerState {
         });
 
         Ok(SchedulerStartOutcome::Started)
+    }
+
+    pub fn current_driver_generation(&self) -> u64 {
+        self.active_loop_generation.load(Ordering::SeqCst)
     }
 
     pub(crate) fn stop(&self) -> Result<(), String> {
@@ -165,7 +171,7 @@ async fn run_interval_loop(
     interval_ms: u64,
     generation: u64,
 ) {
-    emit_cycle_tick(&app);
+    emit_cycle_tick(&app, generation);
 
     loop {
         tokio::select! {
@@ -175,7 +181,7 @@ async fn run_interval_loop(
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(interval_ms)) => {
-                emit_cycle_tick(&app);
+                emit_cycle_tick(&app, generation);
             }
         }
     }
@@ -183,11 +189,13 @@ async fn run_interval_loop(
     state.on_loop_exited(generation);
 }
 
-fn emit_cycle_tick(app: &AppHandle) {
-    emit_scheduler_event_to_main_webview(
+fn emit_cycle_tick(app: &AppHandle, driver_generation: u64) {
+    emit_scheduler_wake_to_main_webview(
         app,
         SCHEDULER_CYCLE_TICK_EVENT,
-        TICK_WAKE_SCRIPT,
+        TICK_WAKE_GLOBAL,
+        "tick",
+        driver_generation,
         "Scheduler",
     );
 }
@@ -220,6 +228,8 @@ pub async fn scheduler_preview_native_cycle(
 ) -> Result<SchedulerNativeCyclePreviewResponse, String> {
     preview_native_refresh_cycle(&app, &db, request).await
 }
+
+pub use native_cycle::scheduler_cancel_native_cycle;
 
 #[tauri::command]
 pub fn scheduler_start(

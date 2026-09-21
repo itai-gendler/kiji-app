@@ -13,7 +13,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewWindow, WindowEvent};
 
 use crate::scheduler::webview_delivery::{
-    emit_scheduler_event_to_main_webview, RESUME_WAKE_SCRIPT,
+    emit_scheduler_wake_to_main_webview, RESUME_WAKE_GLOBAL,
 };
 use crate::system::SCHEDULER_SYSTEM_RESUME_EVENT;
 
@@ -220,10 +220,12 @@ fn start_command_watcher(app: AppHandle, e2e_dir: PathBuf) {
             while watcher_running.load(Ordering::SeqCst) {
                 let command_path = e2e_dir.join("commands").join(EMIT_RESUME_COMMAND);
                 if command_path.is_file() {
-                    emit_scheduler_event_to_main_webview(
+                    emit_scheduler_wake_to_main_webview(
                         &app_handle,
                         SCHEDULER_SYSTEM_RESUME_EVENT,
-                        RESUME_WAKE_SCRIPT,
+                        RESUME_WAKE_GLOBAL,
+                        "resume",
+                        0,
                         "E2E",
                     );
                     let _ = fs::remove_file(&command_path);

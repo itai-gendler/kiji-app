@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useLayoutEffect } from 'react';
 import './ArticleContentElement';
 
 interface ArticleContentProps {
@@ -40,6 +40,23 @@ const ArticleContent = ({
   suspendProcessing = false,
 }: ArticleContentProps) => {
   const elementRef = useRef<ArticleContentElement>(null);
+
+  // Attach metrics listener before setContent so the first metrics event is not lost.
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    if (!element || !onContentMetrics) return;
+
+    const handleContentMetrics = (event: Event) => {
+      const customEvent = event as CustomEvent<ArticleContentMetricsDetail>;
+      onContentMetrics(customEvent.detail);
+    };
+
+    element.addEventListener('article-content-metrics', handleContentMetrics);
+
+    return () => {
+      element.removeEventListener('article-content-metrics', handleContentMetrics);
+    };
+  }, [onContentMetrics]);
 
   // Update content when htmlContent changes
   useEffect(() => {
@@ -93,22 +110,6 @@ const ArticleContent = ({
       element.removeEventListener('article-content-context-menu', handleArticleContextMenu);
     };
   }, [onArticleContextMenu]);
-
-  useEffect(() => {
-    const element = elementRef.current;
-    if (!element || !onContentMetrics) return;
-
-    const handleContentMetrics = (event: Event) => {
-      const customEvent = event as CustomEvent<ArticleContentMetricsDetail>;
-      onContentMetrics(customEvent.detail);
-    };
-
-    element.addEventListener('article-content-metrics', handleContentMetrics);
-
-    return () => {
-      element.removeEventListener('article-content-metrics', handleContentMetrics);
-    };
-  }, [onContentMetrics]);
 
   // Keep article-content accent color in sync with root/system accent color updates.
   useEffect(() => {

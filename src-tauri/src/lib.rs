@@ -46,8 +46,8 @@ use saved::{
     saved_export_preflight, saved_export_start, saved_sync_queue, SavedExportState, SavedSyncState,
 };
 use scheduler::{
-    scheduler_create_run_plan, scheduler_preview_native_cycle, scheduler_reconfigure,
-    scheduler_start, scheduler_stop, FeedSchedulerState,
+    scheduler_cancel_native_cycle, scheduler_create_run_plan, scheduler_preview_native_cycle,
+    scheduler_reconfigure, scheduler_start, scheduler_stop, FeedSchedulerState,
 };
 use settings::{settings_get, settings_reset, settings_update, SettingsState};
 use shell::{
@@ -230,6 +230,7 @@ pub fn run() {
             saved_query,
             saved_sync_queue,
             scheduler_reconfigure,
+            scheduler_cancel_native_cycle,
             scheduler_create_run_plan,
             scheduler_preview_native_cycle,
             scheduler_start,

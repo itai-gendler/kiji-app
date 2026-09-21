@@ -578,8 +578,12 @@ export interface PerformanceSnapshot {
     cpu: number;
     memoryMb: number;
     nativeMemoryMb: number;
+    /** App-owned WebKit helpers only (parent-chain related). Soak gate uses this. */
     webkitMemoryMb: number;
+    /** System-wide WebKit estimate (Safari/Mail/etc.). Never use as a soak gate. */
+    systemWebkitMemoryMb: number;
     processCount: number;
+    attributionConfidence: string;
   };
   main: {
     pid: number;
@@ -690,6 +694,8 @@ export interface SchedulerNativeCyclePreviewRequest {
   maxFeeds?: number;
   concurrency?: number;
   execute?: boolean;
+  /** Renderer-assigned cycle identity for progress routing and cancellation. */
+  cycleId?: string;
 }
 
 export interface SchedulerNativeCycleFeedResult {
@@ -702,6 +708,15 @@ export interface SchedulerNativeCycleFeedResult {
 export interface SchedulerNativeCycleStartPayload {
   queuedCount: number;
   feedIds: string[];
+  cycleId?: string;
+}
+
+export interface SchedulerNativeCycleFeedPayload {
+  feedId: string;
+  insertedCount?: number;
+  error?: string;
+  cycleId?: string;
+  requestId?: string;
 }
 
 export interface SchedulerNativeCyclePreviewResponse {
@@ -713,6 +728,8 @@ export interface SchedulerNativeCyclePreviewResponse {
   failedFeeds: number;
   insertedArticles: number;
   feedResults: SchedulerNativeCycleFeedResult[];
+  cancelled?: boolean;
+  cycleId?: string;
 }
 
 export interface SchedulerContract {
@@ -734,6 +751,10 @@ export interface SchedulerContract {
   previewNativeCycle: {
     request: SchedulerNativeCyclePreviewRequest;
     response: SchedulerNativeCyclePreviewResponse;
+  };
+  cancelNativeCycle: {
+    request: { cycleId: string };
+    response: void;
   };
 }
 

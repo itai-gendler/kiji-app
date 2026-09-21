@@ -1,8 +1,8 @@
 #[cfg(target_os = "macos")]
 use crate::scheduler::webview_delivery::{
-    emit_scheduler_event_to_main_webview, RESUME_WAKE_SCRIPT, SLEEP_WAKE_SCRIPT,
+    emit_scheduler_wake_to_main_webview, RESUME_WAKE_GLOBAL, SLEEP_WAKE_GLOBAL,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const SCHEDULER_SYSTEM_SLEEP_EVENT: &str = "scheduler:system-sleep";
@@ -36,12 +36,22 @@ fn start_macos_power_watch(app: &AppHandle) -> Result<(), String> {
 
     let sleep_app = app.clone();
     let sleep_block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
-        emit_scheduler_power_event(&sleep_app, SCHEDULER_SYSTEM_SLEEP_EVENT, SLEEP_WAKE_SCRIPT);
+        emit_scheduler_power_event(
+            &sleep_app,
+            SCHEDULER_SYSTEM_SLEEP_EVENT,
+            SLEEP_WAKE_GLOBAL,
+            "sleep",
+        );
     });
 
     let wake_app = app.clone();
     let wake_block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
-        emit_scheduler_power_event(&wake_app, SCHEDULER_SYSTEM_RESUME_EVENT, RESUME_WAKE_SCRIPT);
+        emit_scheduler_power_event(
+            &wake_app,
+            SCHEDULER_SYSTEM_RESUME_EVENT,
+            RESUME_WAKE_GLOBAL,
+            "resume",
+        );
     });
 
     unsafe {
@@ -66,20 +76,24 @@ fn start_macos_power_watch(app: &AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn emit_scheduler_power_event(app: &AppHandle, event: &str, wake_script: &str) {
-    emit_scheduler_event_to_main_webview(app, event, wake_script, "Power");
+fn emit_scheduler_power_event(app: &AppHandle, event: &str, global_name: &str, kind: &str) {
+    let driver_generation = app
+        .try_state::<std::sync::Arc<crate::scheduler::FeedSchedulerState>>()
+        .map(|state| state.current_driver_generation())
+        .unwrap_or(0);
+    emit_scheduler_wake_to_main_webview(app, event, global_name, kind, driver_generation, "Power");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::webview_delivery::{RESUME_WAKE_SCRIPT, SLEEP_WAKE_SCRIPT};
+    use crate::scheduler::webview_delivery::{RESUME_WAKE_GLOBAL, SLEEP_WAKE_GLOBAL};
 
     #[test]
-    fn power_events_use_main_webview_wake_scripts() {
+    fn power_events_use_main_webview_wake_globals() {
         assert_eq!(SCHEDULER_SYSTEM_SLEEP_EVENT, "scheduler:system-sleep");
         assert_eq!(SCHEDULER_SYSTEM_RESUME_EVENT, "scheduler:system-resume");
-        assert!(SLEEP_WAKE_SCRIPT.contains("__kijiSchedulerSleep"));
-        assert!(RESUME_WAKE_SCRIPT.contains("__kijiSchedulerResume"));
+        assert_eq!(SLEEP_WAKE_GLOBAL, "__kijiSchedulerSleep");
+        assert_eq!(RESUME_WAKE_GLOBAL, "__kijiSchedulerResume");
     }
 }

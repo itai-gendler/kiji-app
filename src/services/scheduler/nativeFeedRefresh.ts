@@ -24,6 +24,8 @@ export interface NativeFeedRefreshRequest {
   signal?: AbortSignal;
   activityKind?: "background" | "foreground";
   skipActivityQueue?: boolean;
+  /** Renderer-assigned native cycle id for dual-cycle event filtering + cancel. */
+  cycleId?: string;
   onFeedSettled?: (feedId: string) => void;
   onFeedComplete?: (payload: SchedulerNativeCycleFeedPayload) => void;
 }
@@ -56,6 +58,12 @@ export interface NativeFeedRefreshResult {
 //    the in-flight background batch — bounded and concurrent.
 let foregroundTail: Promise<void> = Promise.resolve();
 let backgroundTail: Promise<void> = Promise.resolve();
+
+/** Test-only: drop stranded FG/BG lock tails after aborted gated cycles. */
+export function resetNativeRefreshLockForTests(): void {
+  foregroundTail = Promise.resolve();
+  backgroundTail = Promise.resolve();
+}
 
 const throwIfAborted = (signal?: AbortSignal): void => {
   if (signal?.aborted) {
@@ -123,6 +131,13 @@ export async function runNativeFeedRefresh(
   const isScopedFeedEvent = (feedId: string): boolean =>
     scopedFeedIds.size === 0 || scopedFeedIds.has(feedId);
 
+  const matchesCycleId = (eventCycleId: string | undefined): boolean => {
+    if (!request.cycleId) {
+      return true;
+    }
+    return eventCycleId === request.cycleId;
+  };
+
   return withNativeRefreshLock(async () => {
     throwIfAborted(request.signal);
 
@@ -135,6 +150,9 @@ export async function runNativeFeedRefresh(
       const startUnlisten = await listen<SchedulerNativeCycleStartPayload>(
         SCHEDULER_NATIVE_CYCLE_START_EVENT,
         (event) => {
+          if (!matchesCycleId(event.payload.cycleId)) {
+            return;
+          }
           if (request.skipActivityQueue) {
             return;
           }
@@ -156,6 +174,9 @@ export async function runNativeFeedRefresh(
       const feedUnlisten = await listen<SchedulerNativeCycleFeedPayload>(
         SCHEDULER_NATIVE_CYCLE_FEED_EVENT,
         (event) => {
+          if (!matchesCycleId(event.payload.cycleId)) {
+            return;
+          }
           if (!isScopedFeedEvent(event.payload.feedId)) {
             return;
           }
@@ -177,6 +198,7 @@ export async function runNativeFeedRefresh(
           skipFeedIdsForThisCycle: request.skipFeedIdsForThisCycle,
           forceRefreshFeedIds,
           concurrency: request.concurrency ?? getSchedulerConcurrency(),
+          cycleId: request.cycleId,
         }),
       );
 

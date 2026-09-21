@@ -1,8 +1,11 @@
-use crate::db::{list_feeds, update_feed, DbState, FeedRecord, FeedUpdate};
+use crate::db::{
+    get_feeds_by_ids, list_scheduler_feed_entries, update_feed, DbState, FeedRecord, FeedUpdate,
+    SchedulerFeedRow,
+};
 use crate::feeds::{store_parsed_feed_content, StoreParsedFeedRequest};
-use crate::net::{fetch_with_cache, FeedFetchWithCacheRequest};
+use crate::net::{feeds_abort_request, fetch_with_cache, FeedFetchWithCacheRequest};
 use crate::scheduler::run_plan::{
-    boosts_to_map, create_scheduler_run_plan, scheduler_feed_entry_from_record,
+    boosts_to_map, create_scheduler_run_plan, scheduler_feed_entry_from_scheduler_row,
 };
 use crate::scheduler::types::{
     SchedulerNativeCycleCompletePayload, SchedulerNativeCycleFeedPayload,
@@ -13,11 +16,98 @@ use crate::scheduler::types::{
 };
 use crate::scheduler::webview_delivery::emit_scheduler_payload_to_main_webview;
 use futures_util::future::join_all;
-use std::collections::HashMap;
+use once_cell::sync::Lazy;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use tauri::AppHandle;
 
 const DEFAULT_NATIVE_CYCLE_CONCURRENCY: usize = 3;
 const MAX_NATIVE_CYCLE_CONCURRENCY: usize = 8;
+
+struct ActiveNativeCycle {
+    cancelled: bool,
+    request_ids: Vec<String>,
+}
+
+static ACTIVE_CYCLES: Lazy<Mutex<HashMap<String, ActiveNativeCycle>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Cancel an in-flight native cycle: stop new chunks and abort registered fetches.
+#[tauri::command(rename_all = "camelCase")]
+pub fn scheduler_cancel_native_cycle(cycle_id: String) -> Result<(), String> {
+    let request_ids = {
+        let mut cycles = ACTIVE_CYCLES
+            .lock()
+            .map_err(|_| "Failed to lock native cycle registry.".to_string())?;
+        if let Some(cycle) = cycles.get_mut(&cycle_id) {
+            cycle.cancelled = true;
+            cycle.request_ids.clone()
+        } else {
+            Vec::new()
+        }
+    };
+
+    for request_id in request_ids {
+        let _ = feeds_abort_request(request_id);
+    }
+
+    Ok(())
+}
+
+struct CycleRegistryGuard(Option<String>);
+
+impl Drop for CycleRegistryGuard {
+    fn drop(&mut self) {
+        if let Some(cycle_id) = self.0.take() {
+            unregister_cycle(&cycle_id);
+        }
+    }
+}
+
+fn register_cycle(cycle_id: &str) -> Result<(), String> {
+    let mut cycles = ACTIVE_CYCLES
+        .lock()
+        .map_err(|_| "Failed to lock native cycle registry.".to_string())?;
+    cycles.insert(
+        cycle_id.to_string(),
+        ActiveNativeCycle {
+            cancelled: false,
+            request_ids: Vec::new(),
+        },
+    );
+    Ok(())
+}
+
+fn unregister_cycle(cycle_id: &str) {
+    if let Ok(mut cycles) = ACTIVE_CYCLES.lock() {
+        cycles.remove(cycle_id);
+    }
+}
+
+fn is_cycle_cancelled(cycle_id: &str) -> bool {
+    ACTIVE_CYCLES
+        .lock()
+        .ok()
+        .and_then(|cycles| cycles.get(cycle_id).map(|cycle| cycle.cancelled))
+        .unwrap_or(false)
+}
+
+fn register_request_id(cycle_id: &str, request_id: String) {
+    let already_cancelled = {
+        let Ok(mut cycles) = ACTIVE_CYCLES.lock() else {
+            return;
+        };
+        let Some(cycle) = cycles.get_mut(cycle_id) else {
+            return;
+        };
+        cycle.request_ids.push(request_id.clone());
+        cycle.cancelled
+    };
+    // Cancel may have flipped between chunk check and register — abort immediately.
+    if already_cancelled {
+        let _ = feeds_abort_request(request_id);
+    }
+}
 
 pub async fn preview_native_refresh_cycle(
     app: &AppHandle,
@@ -32,29 +122,26 @@ pub async fn preview_native_refresh_cycle(
         .concurrency
         .unwrap_or(DEFAULT_NATIVE_CYCLE_CONCURRENCY)
         .clamp(1, MAX_NATIVE_CYCLE_CONCURRENCY);
+    let cycle_id = request.cycle_id.clone();
 
-    let (entries, feeds_by_id) = db
+    let _cycle_guard = if let Some(ref id) = cycle_id {
+        register_cycle(id)?;
+        CycleRegistryGuard(Some(id.clone()))
+    } else {
+        CycleRegistryGuard(None)
+    };
+
+    let entries = db
         .read(|connection| {
-            let feeds = list_feeds(connection)?;
-            let feeds_by_id = feeds
+            let rows = list_scheduler_feed_entries(connection)?;
+            Ok(rows
                 .iter()
-                .map(|feed| (feed.id.clone(), feed.clone()))
-                .collect::<HashMap<_, _>>();
-            let entries = feeds
-                .iter()
-                .map(scheduler_feed_entry_from_record)
-                .collect::<Vec<_>>();
-            Ok((entries, feeds_by_id))
+                .map(scheduler_feed_entry_from_scheduler_row)
+                .collect::<Vec<_>>())
         })
         .await?;
 
-    let plan = create_scheduler_run_plan(
-        &entries,
-        entries.len(),
-        &boosts,
-        now_ms,
-        &options,
-    );
+    let plan = create_scheduler_run_plan(&entries, entries.len(), &boosts, now_ms, &options);
 
     let mut prioritized = plan.prioritized.clone();
     if let Some(max_feeds) = request.max_feeds {
@@ -73,6 +160,7 @@ pub async fn preview_native_refresh_cycle(
             &SchedulerNativeCycleStartPayload {
                 queued_count,
                 feed_ids: queued_feed_ids,
+                cycle_id: cycle_id.clone(),
             },
             "Scheduler",
         );
@@ -83,26 +171,56 @@ pub async fn preview_native_refresh_cycle(
     let mut not_modified_feeds = 0usize;
     let mut failed_feeds = 0usize;
     let mut inserted_articles = 0i64;
+    let mut cancelled = false;
 
     if execute && queued_count > 0 {
-        let force_refresh_feed_ids = options.force_refresh_feed_ids.clone();
+        let force_refresh_feed_ids: HashSet<String> = options
+            .force_refresh_feed_ids
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
         for chunk in prioritized.chunks(concurrency) {
+            if let Some(ref id) = cycle_id {
+                if is_cycle_cancelled(id) {
+                    cancelled = true;
+                    break;
+                }
+            }
+
+            let chunk_ids: Vec<String> = chunk
+                .iter()
+                .map(|entry| entry.entry.feed_id.clone())
+                .collect();
+            let feeds_by_id = db
+                .read(move |connection| get_feeds_by_ids(connection, &chunk_ids))
+                .await?;
+
             let chunk_futures = chunk.iter().map(|entry| {
                 let feed = feeds_by_id
                     .get(&entry.entry.feed_id)
                     .cloned()
                     .ok_or_else(|| format!("Feed not found: {}", entry.entry.feed_id))?;
-                let force_refresh = force_refresh_feed_ids
+                let force_refresh = force_refresh_feed_ids.contains(&feed.id);
+                let request_id = cycle_id
                     .as_ref()
-                    .map(|ids| ids.iter().any(|id| id == &feed.id))
-                    .unwrap_or(false);
-                Ok(refresh_single_feed_native(db, feed, force_refresh))
+                    .map(|cid| format!("{}:{}", cid, feed.id));
+                if let Some(cid) = cycle_id.as_ref() {
+                    if let Some(rid) = request_id.clone() {
+                        register_request_id(cid, rid);
+                    }
+                }
+                Ok(refresh_single_feed_native(db, feed, force_refresh, request_id))
             });
             let chunk_tasks: Result<Vec<_>, String> = chunk_futures.collect();
             let chunk_tasks = chunk_tasks?;
 
             let chunk_results = join_all(chunk_tasks).await;
             for (entry, result) in chunk.iter().zip(chunk_results) {
+                let request_id = cycle_id
+                    .as_ref()
+                    .map(|cid| format!("{}:{}", cid, entry.entry.feed_id));
                 let feed_result = match result {
                     Ok(outcome) => {
                         match outcome.status.as_str() {
@@ -136,10 +254,18 @@ pub async fn preview_native_refresh_cycle(
                         feed_id: feed_result.feed_id.clone(),
                         inserted_count: feed_result.inserted_count,
                         error: feed_result.error.clone(),
+                        cycle_id: cycle_id.clone(),
+                        request_id,
                     },
                     "Scheduler",
                 );
                 feed_results.push(feed_result);
+            }
+        }
+
+        if !cancelled {
+            if let Some(ref id) = cycle_id {
+                cancelled = is_cycle_cancelled(id);
             }
         }
 
@@ -152,6 +278,8 @@ pub async fn preview_native_refresh_cycle(
                 not_modified_feeds,
                 failed_feeds,
                 inserted_articles,
+                cycle_id: cycle_id.clone(),
+                cancelled: Some(cancelled),
             },
             "Scheduler",
         );
@@ -166,6 +294,8 @@ pub async fn preview_native_refresh_cycle(
         failed_feeds,
         inserted_articles,
         feed_results,
+        cancelled: Some(cancelled),
+        cycle_id,
     })
 }
 
@@ -178,6 +308,7 @@ async fn refresh_single_feed_native(
     db: &DbState,
     feed: FeedRecord,
     force_refresh: bool,
+    request_id: Option<String>,
 ) -> Result<NativeFeedRefreshOutcome, String> {
     // A manual/forced refresh must bypass conditional GET so the server returns
     // 200 with a full body instead of a 304. The 60s cooldown + forceNetwork
@@ -186,7 +317,7 @@ async fn refresh_single_feed_native(
     let (etag, last_modified) = conditional_headers(&feed, force_refresh);
     let network = match fetch_with_cache(FeedFetchWithCacheRequest {
         url: feed.url.clone(),
-        request_id: None,
+        request_id,
         etag,
         last_modified,
         timeout: None,
@@ -422,5 +553,28 @@ mod tests {
         let (etag, last_modified) = conditional_headers(&feed, false);
         assert!(etag.is_none());
         assert!(last_modified.is_none());
+    }
+
+    #[test]
+    fn scheduler_feed_row_maps_to_entry_fields() {
+        let row = SchedulerFeedRow {
+            id: "f1".to_string(),
+            title: "Title".to_string(),
+            url: "https://example.com/rss".to_string(),
+            last_fetched: Some("2026-06-30T02:00:00.000Z".to_string()),
+            last_failed_fetch_at: None,
+            sort_order: 3,
+            update_frequency_score: 1.5,
+            consecutive_failures: 2,
+        };
+        let entry = scheduler_feed_entry_from_scheduler_row(&row);
+        assert_eq!(entry.feed_id, "f1");
+        assert_eq!(entry.feed_url, "https://example.com/rss");
+        assert_eq!(entry.feed_title, "Title");
+        assert_eq!(entry.sort_order, 3);
+        assert_eq!(entry.update_frequency_score, 1.5);
+        assert_eq!(entry.consecutive_failures, 2);
+        assert!(entry.last_fetched_ms.is_some());
+        assert!(entry.last_failed_fetch_at_ms.is_none());
     }
 }

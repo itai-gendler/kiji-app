@@ -46,11 +46,13 @@ describe("nativeSchedulerCycle", () => {
       skipFeedIdsForThisCycle: undefined,
       concurrency: 4,
       now: 1_700_000_000_000,
+      cycleId: "native-3",
     });
 
     expect(request.execute).toBe(true);
     expect(request.concurrency).toBe(4);
     expect(request.nowMs).toBe(1_700_000_000_000);
+    expect(request.cycleId).toBe("native-3");
     expect(request.options?.excludeFeedIds).toEqual(["feed-skip"]);
   });
 

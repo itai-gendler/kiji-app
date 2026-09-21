@@ -26,6 +26,10 @@ import {
   shouldRunDeferredCycleNow,
   type PendingCycleReason,
 } from './schedulerDeferredCyclePolicy';
+import {
+  shouldAcceptWake,
+  type SchedulerWakePayload,
+} from './schedulerWakeDedupe';
 import type {
   BackgroundUpdateMode,
   FeedPriorityEntry,
@@ -111,6 +115,10 @@ class FeedSchedulerService {
   private lastSleepGapHeartbeatAt = 0;
   /** Set after sleep or a cycle with no successful fetches; cleared on any changed/304 outcome. */
   private needsResumeCatchUp = false;
+  private catchUpInFlight = false;
+  private pendingCatchUpRerun = false;
+  /** Native IPC cycle key (`native-${cycleId}`) while a native refresh is in flight. */
+  private activeNativeCycleKey: string | null = null;
 
   on(listener: (event: SchedulerEvent) => void): () => void {
     this.listeners.add(listener);
@@ -182,7 +190,8 @@ class FeedSchedulerService {
         this.markPendingCycleTick('interval-tick');
         this.invalidateActiveCycle();
         this.clearAbort();
-        this.cycleInProgress = false;
+        void this.cancelActiveNativeCycle();
+        // Keep cycleInProgress until refreshAllFeeds finally clears it after drain.
       }
       this.stationSelectionPauseTimer = setTimeout(() => {
         this.releaseStationSelectionPause('timeout');
@@ -221,10 +230,12 @@ class FeedSchedulerService {
     logger.info('Scheduler', 'Released station-selection scheduler pause', { reason });
 
     if (reason === 'selection-changed') {
-      this.pendingImportRefreshFeedIds = null;
-      this.pendingImportRefreshBypassFailureBackoff = false;
+      // Preserve pending import boosts across selection hops; only clear the
+      // interactive deferred tail. Import pending still owns the next tick.
       feedRefreshActivity.clearInteractiveRefreshDeferredTail();
-      if (this.shouldScheduleCatchUpCycle()) {
+      if (this.pendingImportRefreshFeedIds && this.pendingImportRefreshFeedIds.size > 0) {
+        this.markPendingCycleTick('import-boost');
+      } else if (this.shouldScheduleCatchUpCycle()) {
         this.markPendingCycleTick('catch-up');
       }
       return;
@@ -310,8 +321,12 @@ class FeedSchedulerService {
     this.pendingImportRefreshBypassFailureBackoff = false;
     this.consecutiveDeferredTicks = 0;
     this.deferStartupCycleUntilInteraction = false;
+    this.catchUpInFlight = false;
+    this.pendingCatchUpRerun = false;
     this.clearStartupDeferTimer();
     this.invalidateActiveCycle();
+    void this.cancelActiveNativeCycle();
+    this.activeNativeCycleKey = null;
     this.finishCycleDrain();
 
     if (this.systemPowerUnlistenSleep) {
@@ -343,6 +358,8 @@ class FeedSchedulerService {
 
   async reconfigure(mode: BackgroundUpdateMode): Promise<void> {
     this.mode = mode;
+    this.invalidateActiveCycle();
+    void this.cancelActiveNativeCycle();
     this.clearAbort();
     const lifecycleId = ++this.lifecycleId;
     logger.info('Scheduler', 'Reconfigured feed scheduler lifecycle', { mode });
@@ -359,6 +376,23 @@ class FeedSchedulerService {
   }
 
   async catchUpAfterResume(): Promise<void> {
+    if (this.catchUpInFlight) {
+      this.pendingCatchUpRerun = true;
+      return;
+    }
+
+    this.catchUpInFlight = true;
+    try {
+      do {
+        this.pendingCatchUpRerun = false;
+        await this.runCatchUpAfterResumeOnce();
+      } while (this.pendingCatchUpRerun);
+    } finally {
+      this.catchUpInFlight = false;
+    }
+  }
+
+  private async runCatchUpAfterResumeOnce(): Promise<void> {
     if (this.mode === 'never' || this.mode === 'on-launch') {
       return;
     }
@@ -769,16 +803,56 @@ class FeedSchedulerService {
     }
 
     const globalScope = globalThis as Record<string, unknown>;
-    globalScope[SCHEDULER_TICK_WAKE_GLOBAL] = () => {
+    globalScope[SCHEDULER_TICK_WAKE_GLOBAL] = (payload?: SchedulerWakePayload) => {
+      if (!this.acceptWakeOrLog(payload, 'eval', 'tick')) {
+        return;
+      }
       void this.handleNativeCycleTick(this.lifecycleId);
     };
-    globalScope[SCHEDULER_SLEEP_WAKE_GLOBAL] = () => {
+    globalScope[SCHEDULER_SLEEP_WAKE_GLOBAL] = (payload?: SchedulerWakePayload) => {
+      if (!this.acceptWakeOrLog(payload, 'eval', 'sleep')) {
+        return;
+      }
       void this.handleSystemSleep();
     };
-    globalScope[SCHEDULER_RESUME_WAKE_GLOBAL] = () => {
+    globalScope[SCHEDULER_RESUME_WAKE_GLOBAL] = (payload?: SchedulerWakePayload) => {
+      if (!this.acceptWakeOrLog(payload, 'eval', 'resume')) {
+        return;
+      }
       this.needsResumeCatchUp = true;
       void this.catchUpAfterResume();
     };
+  }
+
+  private acceptWakeOrLog(
+    payload: SchedulerWakePayload | null | undefined,
+    channel: 'event' | 'eval',
+    kind: string,
+  ): boolean {
+    if (shouldAcceptWake(payload, channel)) {
+      return true;
+    }
+
+    logger.info('Scheduler', 'Dropped duplicate scheduler wake', {
+      event: 'scheduler-wake-deduped',
+      channel,
+      kind: payload?.kind ?? kind,
+      wakeId: payload?.wakeId,
+      driverGeneration: payload?.driverGeneration,
+    });
+    return false;
+  }
+
+  private extractWakePayload(payload: unknown): SchedulerWakePayload | undefined {
+    if (
+      payload
+      && typeof payload === 'object'
+      && typeof (payload as SchedulerWakePayload).wakeId === 'number'
+      && typeof (payload as SchedulerWakePayload).driverGeneration === 'number'
+    ) {
+      return payload as SchedulerWakePayload;
+    }
+    return undefined;
   }
 
   private unregisterNativeWakeHandlers(): void {
@@ -814,14 +888,24 @@ class FeedSchedulerService {
       return;
     }
 
-    this.nativeTickUnlisten = await listen(SCHEDULER_CYCLE_TICK_EVENT, () => {
+    const unlisten = await listen(SCHEDULER_CYCLE_TICK_EVENT, (event) => {
+      const payload = this.extractWakePayload(event?.payload);
+      if (!this.acceptWakeOrLog(payload, 'event', 'tick')) {
+        return;
+      }
       void this.handleNativeCycleTick(this.lifecycleId);
     });
 
     if (!this.isCurrentLifecycle(lifecycleId)) {
-      this.nativeTickUnlisten();
-      this.nativeTickUnlisten = null;
+      unlisten();
+      // StrictMode / overlapping start(): only clear if we still own the slot.
+      if (this.nativeTickUnlisten === unlisten) {
+        this.nativeTickUnlisten = null;
+      }
+      return;
     }
+
+    this.nativeTickUnlisten = unlisten;
   }
 
   private async handleNativeCycleTick(lifecycleId: number): Promise<void> {
@@ -962,9 +1046,10 @@ class FeedSchedulerService {
 
     this.invalidateActiveCycle();
     this.clearAbort();
-    this.cycleInProgress = false;
+    void this.cancelActiveNativeCycle();
     this.consecutiveDeferredTicks = 0;
     this.markPendingCycleTick('interval-tick');
+    // Do not clear cycleInProgress here — await drain and let refreshAllFeeds finally clear it.
     await this.awaitCycleDrain();
     return true;
   }
@@ -974,20 +1059,36 @@ class FeedSchedulerService {
       return;
     }
 
-    this.systemPowerUnlistenSleep = await listen(SCHEDULER_SYSTEM_SLEEP_EVENT, () => {
+    const sleepUnlisten = await listen(SCHEDULER_SYSTEM_SLEEP_EVENT, (event) => {
+      const payload = this.extractWakePayload(event?.payload);
+      if (!this.acceptWakeOrLog(payload, 'event', 'sleep')) {
+        return;
+      }
       void this.handleSystemSleep();
     });
-    this.systemPowerUnlistenResume = await listen(SCHEDULER_SYSTEM_RESUME_EVENT, () => {
+    const resumeUnlisten = await listen(SCHEDULER_SYSTEM_RESUME_EVENT, (event) => {
+      const payload = this.extractWakePayload(event?.payload);
+      if (!this.acceptWakeOrLog(payload, 'event', 'resume')) {
+        return;
+      }
       this.needsResumeCatchUp = true;
       void this.catchUpAfterResume();
     });
 
     if (!this.isCurrentLifecycle(lifecycleId)) {
-      this.systemPowerUnlistenSleep();
-      this.systemPowerUnlistenSleep = null;
-      this.systemPowerUnlistenResume();
-      this.systemPowerUnlistenResume = null;
+      sleepUnlisten();
+      resumeUnlisten();
+      if (this.systemPowerUnlistenSleep === sleepUnlisten) {
+        this.systemPowerUnlistenSleep = null;
+      }
+      if (this.systemPowerUnlistenResume === resumeUnlisten) {
+        this.systemPowerUnlistenResume = null;
+      }
+      return;
     }
+
+    this.systemPowerUnlistenSleep = sleepUnlisten;
+    this.systemPowerUnlistenResume = resumeUnlisten;
   }
 
   private clearStationSelectionPauseTimer(): void {
@@ -1000,6 +1101,22 @@ class FeedSchedulerService {
   private clearAbort(): void {
     this.abortController?.abort();
     this.abortController = null;
+  }
+
+  private async cancelActiveNativeCycle(): Promise<void> {
+    const cycleKey = this.activeNativeCycleKey;
+    if (!cycleKey) {
+      return;
+    }
+
+    try {
+      await tauriClient.scheduler.cancelNativeCycle({ cycleId: cycleKey });
+    } catch (error) {
+      logger.warn('Scheduler', 'Failed to cancel native refresh cycle', {
+        cycleId: cycleKey,
+        error,
+      });
+    }
   }
 
   private isCurrentLifecycle(lifecycleId: number): boolean {
@@ -1020,15 +1137,20 @@ class FeedSchedulerService {
     const scopedTailGeneration = scope.onlyFeedIds && scope.onlyFeedIds.size > 0
       ? feedRefreshActivity.getInteractiveRefreshScopeGeneration()
       : undefined;
+    const pendingReason = this.pendingCycleReason;
+    const queueDepth = this.pendingCycleTick ? 1 : 0;
     this.clearPendingCycleTick();
     this.beginCycleDrain();
     this.cycleInProgress = true;
     this.lastCycleStartedAt = Date.now();
     this.abortController = new AbortController();
     const { signal } = this.abortController;
-    this.emit({ type: 'cycle-start' });
+    this.emit({ type: 'cycle-start', cycleId });
     logger.info('Scheduler', 'Background refresh cycle started', {
       mode: this.mode,
+      cycleId,
+      queueDepth,
+      pendingReason,
       scopedFeedCount: scope.onlyFeedIds?.size ?? null,
       excludedFeedCount: scope.excludeFeedIds?.size ?? null,
     });
@@ -1042,15 +1164,6 @@ class FeedSchedulerService {
     const feedsNeedingCountSync = new Set<string>();
 
     try {
-      const feeds = await feedStore.getAll();
-      if (feeds.length === 0 || signal.aborted || !this.isCurrentLifecycle(lifecycleId)) {
-        return;
-      }
-
-      if (cycleId !== this.activeCycleId) {
-        return;
-      }
-
       if (isNativeFeedIngestionEnabled()) {
         await this.executeNativeRefreshCycle({
           lifecycleId,
@@ -1058,6 +1171,15 @@ class FeedSchedulerService {
           scope,
           signal,
         });
+        return;
+      }
+
+      const feeds = await feedStore.getAll();
+      if (feeds.length === 0 || signal.aborted || !this.isCurrentLifecycle(lifecycleId)) {
+        return;
+      }
+
+      if (cycleId !== this.activeCycleId) {
         return;
       }
 
@@ -1147,10 +1269,11 @@ class FeedSchedulerService {
         skippedBackoffFeeds: skippedBackoffCount,
         skippedSuppressedFeeds: skippedSuppressedCount,
         activeStationFeedCount: frontloadFeedIds?.size ?? 0,
+        cycleId,
         ...cycleStats,
       });
     } catch (error) {
-      logger.error('Scheduler', 'Background refresh cycle failed', { error });
+      logger.error('Scheduler', 'Background refresh cycle failed', { error, cycleId });
       this.needsResumeCatchUp = true;
     } finally {
       const durationMs = this.lastCycleStartedAt === null
@@ -1158,25 +1281,31 @@ class FeedSchedulerService {
         : Date.now() - this.lastCycleStartedAt;
       this.finishCycleDrain();
 
-      if (cycleId !== this.activeCycleId) {
+      const wasSuperseded = cycleId !== this.activeCycleId;
+      // Always clear the in-progress flag once this cycle drains — pause/abort
+      // no longer clear it early so overlapping logical starts stay bounded.
+      this.cycleInProgress = false;
+      this.abortController = null;
+
+      if (wasSuperseded) {
         logger.info('Scheduler', 'Discarded superseded background refresh cycle completion', {
           mode: this.mode,
           cycleId,
           activeCycleId: this.activeCycleId,
         });
-        if (scope.onlyFeedIds && scope.onlyFeedIds.size > 0 && !this.cycleInProgress) {
+        if (scope.onlyFeedIds && scope.onlyFeedIds.size > 0) {
           feedRefreshActivity.clearInteractiveRefreshDeferredTail(scopedTailGeneration);
         }
+        this.maybeRunDeferredCycle(lifecycleId);
         return;
       }
 
-      this.cycleInProgress = false;
-      this.abortController = null;
       this.lastCycleCompletedAt = Date.now();
       this.consecutiveDeferredTicks = 0;
-      this.emit({ type: 'cycle-complete' });
+      this.emit({ type: 'cycle-complete', cycleId });
       logger.info('Scheduler', 'Background refresh cycle completed', {
         mode: this.mode,
+        cycleId,
         durationMs,
       });
 
@@ -1199,7 +1328,9 @@ class FeedSchedulerService {
     const skipFeedIdsForThisCycle = this.consumeSkipOnceFeedIds();
     const now = Date.now();
     this.pruneExpiredBoosts(now);
-    const progressPublisher = this.createNativeCycleProgressPublisher();
+    const nativeCycleKey = `native-${cycleId}`;
+    this.activeNativeCycleKey = nativeCycleKey;
+    const progressPublisher = this.createNativeCycleProgressPublisher(cycleId);
 
     try {
       if (signal.aborted || !this.isCurrentLifecycle(lifecycleId) || cycleId !== this.activeCycleId) {
@@ -1213,6 +1344,7 @@ class FeedSchedulerService {
         skipFeedIdsForThisCycle,
         signal,
         activityKind: 'background',
+        cycleId: nativeCycleKey,
         onFeedComplete: (payload) => {
           if (!payload.error) {
             progressPublisher.noteFeedInserted(payload.feedId, payload.insertedCount);
@@ -1238,7 +1370,7 @@ class FeedSchedulerService {
       // list stays stale even though rows already exist in SQLite (observed
       // as the post-import skeleton timing out onto an empty list).
       if (signal.aborted || cycleId !== this.activeCycleId) {
-        await this.publishCommittedCycleResults(result);
+        await this.publishCommittedCycleResults(result, cycleId);
         logger.info('Scheduler', 'Published committed results from superseded native refresh cycle', {
           cycleId,
           activeCycleId: this.activeCycleId,
@@ -1248,7 +1380,7 @@ class FeedSchedulerService {
         return;
       }
 
-      await this.publishCommittedCycleResults(result);
+      await this.publishCommittedCycleResults(result, cycleId);
 
       const changedFeeds = result.feedResults.filter((feed) => feed.status === 'changed').length;
       const notModifiedFeeds = result.feedResults.filter((feed) => feed.status === 'not-modified').length;
@@ -1261,6 +1393,7 @@ class FeedSchedulerService {
       });
 
       logger.info('Scheduler', 'Native background refresh cycle stats', {
+        cycleId,
         queuedCount: result.feedResults.length,
         executedFeedCount: result.feedResults.length,
         changedFeeds,
@@ -1271,10 +1404,13 @@ class FeedSchedulerService {
         bypassFailureBackoff: scope.bypassFailureBackoff === true,
       });
     } catch (error) {
-      logger.error('Scheduler', 'Native background refresh cycle failed', { error });
+      logger.error('Scheduler', 'Native background refresh cycle failed', { error, cycleId });
       this.needsResumeCatchUp = true;
     } finally {
-      progressPublisher.dispose();
+      await progressPublisher.dispose();
+      if (this.activeNativeCycleKey === nativeCycleKey) {
+        this.activeNativeCycleKey = null;
+      }
     }
   }
 
@@ -1285,16 +1421,22 @@ class FeedSchedulerService {
    * idempotent against the cycle-end publish: FeedContext merges pending
    * updates with Math.max and the count sync is a pure recompute.
    */
-  private createNativeCycleProgressPublisher(): {
+  private createNativeCycleProgressPublisher(cycleId: number): {
     noteFeedInserted: (feedId: string, insertedCount?: number | null) => void;
-    dispose: () => void;
+    dispose: () => Promise<void>;
   } {
     const pendingInsertedByFeedId = new Map<string, number>();
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let flushInFlight = false;
 
-    const flush = async (): Promise<void> => {
+    const flush = async (options?: { force?: boolean }): Promise<void> => {
       if (flushInFlight || pendingInsertedByFeedId.size === 0) {
+        return;
+      }
+      // Mid-cycle flushes only while this cycle is still the active one;
+      // dispose may force one final publish after supersede so committed
+      // inserts still reach the UI keyed by this cycleId.
+      if (!options?.force && cycleId !== this.activeCycleId) {
         return;
       }
       flushInFlight = true;
@@ -1315,13 +1457,17 @@ class FeedSchedulerService {
 
         this.emit({
           type: 'feeds-batch-updated',
+          cycleId,
           updates: Array.from(batch, ([feedId, newArticleCount]) => ({
             feedId,
             newArticleCount,
           })),
         });
       } catch (error) {
-        logger.warn('Scheduler', 'Failed to publish native cycle insert progress', { error });
+        logger.warn('Scheduler', 'Failed to publish native cycle insert progress', {
+          error,
+          cycleId,
+        });
       } finally {
         flushInFlight = false;
       }
@@ -1344,17 +1490,22 @@ class FeedSchedulerService {
           void flush();
         }, NATIVE_CYCLE_PROGRESS_PUBLISH_INTERVAL_MS);
       },
-      dispose: () => {
+      dispose: async () => {
         if (flushTimer !== null) {
           clearTimeout(flushTimer);
           flushTimer = null;
         }
-        pendingInsertedByFeedId.clear();
+        if (pendingInsertedByFeedId.size > 0) {
+          await flush({ force: true });
+        }
       },
     };
   }
 
-  private async publishCommittedCycleResults(result: NativeFeedRefreshResult): Promise<void> {
+  private async publishCommittedCycleResults(
+    result: NativeFeedRefreshResult,
+    cycleId: number,
+  ): Promise<void> {
     const feedIdsToSync = collectFeedIdsNeedingCountSync(result.feedResults);
     if (feedIdsToSync.length > 0) {
       const syncedCounts = await articleStore.syncFeedCountsBatch(feedIdsToSync);
@@ -1376,6 +1527,7 @@ class FeedSchedulerService {
     if (result.insertedByFeedId.size > 0) {
       this.emit({
         type: 'feeds-batch-updated',
+        cycleId,
         updates: Array.from(result.insertedByFeedId, ([feedId, newArticleCount]) => ({
           feedId,
           newArticleCount,

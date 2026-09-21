@@ -54,9 +54,11 @@ fn sample_once(
         .sum();
     let storage_free_gb = read_primary_disk_free_gb();
 
+    let system_webkit_memory_mb = snapshot.totals.system_webkit_memory_mb;
+    let attribution_confidence = snapshot.totals.attribution_confidence.clone();
     let timestamp = super::state::timestamp();
     let line = format!(
-        "[{timestamp}] cpu={total_cpu_percent:.2}% totalMemoryMb={total_memory_mb:.1} nativeMemoryMb={native_memory_mb:.1} webkitMemoryMb={webkit_memory_mb:.1} processCount={process_count} storageFreeGb={}\n",
+        "[{timestamp}] cpu={total_cpu_percent:.2}% totalMemoryMb={total_memory_mb:.1} nativeMemoryMb={native_memory_mb:.1} webkitMemoryMb={webkit_memory_mb:.1} systemWebkitMemoryMb={system_webkit_memory_mb:.1} attributionConfidence={attribution_confidence} processCount={process_count} storageFreeGb={}\n",
         storage_free_gb
             .map(|value| format!("{value:.2}"))
             .unwrap_or_else(|| "null".to_string())

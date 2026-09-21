@@ -66,6 +66,8 @@ pub struct SchedulerNativeCyclePreviewRequest {
     pub max_feeds: Option<usize>,
     pub concurrency: Option<usize>,
     pub execute: Option<bool>,
+    /// Renderer-assigned cycle identity for progress routing and cancellation.
+    pub cycle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +90,8 @@ pub struct SchedulerNativeCyclePreviewResponse {
     pub failed_feeds: usize,
     pub inserted_articles: i64,
     pub feed_results: Vec<SchedulerNativeCycleFeedResult>,
+    pub cancelled: Option<bool>,
+    pub cycle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,6 +99,7 @@ pub struct SchedulerNativeCyclePreviewResponse {
 pub struct SchedulerNativeCycleStartPayload {
     pub queued_count: usize,
     pub feed_ids: Vec<String>,
+    pub cycle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -103,6 +108,8 @@ pub struct SchedulerNativeCycleFeedPayload {
     pub feed_id: String,
     pub inserted_count: Option<i64>,
     pub error: Option<String>,
+    pub cycle_id: Option<String>,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +120,8 @@ pub struct SchedulerNativeCycleCompletePayload {
     pub not_modified_feeds: usize,
     pub failed_feeds: usize,
     pub inserted_articles: i64,
+    pub cycle_id: Option<String>,
+    pub cancelled: Option<bool>,
 }
 
 pub const SCHEDULER_NATIVE_CYCLE_START_EVENT: &str = "scheduler:native-cycle-start";

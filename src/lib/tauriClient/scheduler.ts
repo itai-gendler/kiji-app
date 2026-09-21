@@ -31,3 +31,12 @@ export async function previewNativeCycle(
     { request },
   );
 }
+
+export async function cancelNativeCycle(
+  request: SchedulerContract["cancelNativeCycle"]["request"],
+): Promise<SchedulerContract["cancelNativeCycle"]["response"]> {
+  return invokeCommand<SchedulerContract["cancelNativeCycle"]["response"]>(
+    "scheduler_cancel_native_cycle",
+    { cycleId: request.cycleId },
+  );
+}
