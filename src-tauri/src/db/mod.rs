@@ -20,8 +20,7 @@ pub use feeds::{
     feeds_count, feeds_create, feeds_delete, feeds_delete_many, feeds_get, feeds_get_by_url,
     feeds_library_sidebar_snapshot, feeds_list, feeds_reorder_unstationed, feeds_update,
     feeds_update_article_count, feeds_update_last_fetched, feeds_update_unread_count,
-    get_feeds_by_ids, list_feeds, list_scheduler_feed_entries, update_feed, FeedUpdate,
-    SchedulerFeedRow,
+    get_feeds_by_ids, list_scheduler_feed_entries, update_feed, FeedUpdate, SchedulerFeedRow,
 };
 use migrations::read_current_migration_version;
 pub use migrations::run_migrations;
