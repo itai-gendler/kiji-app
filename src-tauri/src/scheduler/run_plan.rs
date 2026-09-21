@@ -8,6 +8,7 @@ use crate::scheduler::types::{
     SchedulerRunPlanOptions,
 };
 
+#[allow(dead_code)] // Kept for FeedRecord → entry mapping outside the slim-row path.
 pub fn scheduler_feed_entry_from_record(feed: &FeedRecord) -> SchedulerFeedEntry {
     SchedulerFeedEntry {
         feed_id: feed.id.clone(),

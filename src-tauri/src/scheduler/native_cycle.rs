@@ -1,6 +1,5 @@
 use crate::db::{
     get_feeds_by_ids, list_scheduler_feed_entries, update_feed, DbState, FeedRecord, FeedUpdate,
-    SchedulerFeedRow,
 };
 use crate::feeds::{store_parsed_feed_content, StoreParsedFeedRequest};
 use crate::net::{feeds_abort_request, fetch_with_cache, FeedFetchWithCacheRequest};
