@@ -18,6 +18,7 @@ use std::sync::{
 };
 
 use db::{
+    articles_begin_search, articles_cancel_search,
     articles_clean_old_across_feeds, articles_clean_old_by_feed, articles_count_by_feed,
     articles_count_unread_by_feed, articles_delete_by_feed, articles_delete_by_feeds,
     articles_exists, articles_get,
@@ -157,6 +158,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(window_guards_plugin())
         .invoke_handler(tauri::generate_handler![
+            articles_begin_search,
+            articles_cancel_search,
             articles_clean_old_across_feeds,
             articles_clean_old_by_feed,
             articles_count_by_feed,

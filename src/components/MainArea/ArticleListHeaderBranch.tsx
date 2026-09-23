@@ -35,12 +35,18 @@ export const ArticleListHeaderBranch = memo(function ArticleListHeaderBranch({
     selectedSmartView,
   } = useFeedNavigation();
   const { articles, articlesTotalCount, articlesTotalKnown } = useFeedCollectionArticles();
-  const { isLoadingArticles, isSavedListLoading } = useFeedCollectionLoading();
+  const { isLoadingArticles, isSavedListLoading, searchStatus } = useFeedCollectionLoading();
   const { hasListScrollOffset } = useArticleListScrollOffset();
 
   const isSavedView = variant === 'saved';
   const isListLoading = isSavedView ? isSavedListLoading : isLoadingArticles;
   const isInitialLoading = isListLoading && articles.length === 0;
+  const hasSearchText = isSearchOpen && searchQuery.trim().length > 0;
+  const subtitleText = hasSearchText && searchStatus === 'pending'
+    ? 'Searching…'
+    : hasSearchText && searchStatus === 'error'
+      ? 'Search failed'
+      : `${articlesTotalCount} Items`;
 
   return (
     <ArticleListHeaderSection
@@ -50,8 +56,12 @@ export const ArticleListHeaderBranch = memo(function ArticleListHeaderBranch({
       isInitialLoading={isInitialLoading}
       showSourceTitle={!!(selectedFeedId || selectedTag || selectedSmartView)}
       selectedFeedTitle={selectedFeedTitle}
-      subtitleText={`${articlesTotalCount} Items`}
-      hideSubtitle={articlesTotalKnown === false}
+      subtitleText={subtitleText}
+      hideSubtitle={
+        articlesTotalKnown === false
+        && searchStatus !== 'pending'
+        && searchStatus !== 'error'
+      }
       isSavedView={isSavedView}
       isSearchOpen={isSearchOpen}
       searchQuery={searchQuery}

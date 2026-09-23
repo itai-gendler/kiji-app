@@ -39,7 +39,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -69,12 +69,15 @@ pub struct DatabaseStatus {
 /// behind a feed-refresh store cycle.
 const READER_POOL_SIZE: usize = 3;
 const BUSY_TIMEOUT_MS: u64 = 5_000;
+const SEARCH_PROGRESS_VM_OP_INTERVAL: i32 = 5_000;
 
 struct DbStateInner {
     path: PathBuf,
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
     next_reader: AtomicUsize,
+    search_reader: Mutex<Connection>,
+    search_epoch: AtomicU64,
     previous_shutdown_unclean: bool,
 }
 
@@ -112,6 +115,7 @@ impl DbState {
         for _ in 0..READER_POOL_SIZE {
             readers.push(Mutex::new(open_reader_connection(&path)?));
         }
+        let search_reader = Mutex::new(open_reader_connection(&path)?);
 
         Ok(Self {
             inner: Arc::new(DbStateInner {
@@ -119,6 +123,8 @@ impl DbState {
                 writer: Mutex::new(writer),
                 readers,
                 next_reader: AtomicUsize::new(0),
+                search_reader,
+                search_epoch: AtomicU64::new(0),
                 previous_shutdown_unclean,
             }),
         })
@@ -228,6 +234,41 @@ impl DbState {
         action(&connection)
     }
 
+    fn with_search_reader<T>(
+        &self,
+        epoch: u64,
+        action: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<Option<T>, String> {
+        let connection = self
+            .inner
+            .search_reader
+            .lock()
+            .map_err(|_| "Failed to lock the database search connection.".to_string())?;
+        if self.inner.search_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(None);
+        }
+
+        let inner = Arc::clone(&self.inner);
+        connection
+            .progress_handler(
+                SEARCH_PROGRESS_VM_OP_INTERVAL,
+                Some(move || inner.search_epoch.load(Ordering::Acquire) != epoch),
+            )
+            .map_err(|error| format!("Failed to install search cancellation handler: {error}"))?;
+
+        let result = action(&connection);
+        let stale = self.inner.search_epoch.load(Ordering::Acquire) != epoch;
+        let cleanup_result = connection.progress_handler::<fn() -> bool>(0, None);
+
+        if let Err(error) = cleanup_result {
+            return Err(format!("Failed to clear search cancellation handler: {error}"));
+        }
+        if stale {
+            return Ok(None);
+        }
+        result.map(Some)
+    }
+
     /// Async read helper: pooled reader on the blocking thread pool, keeping
     /// SQLite work off the Tauri event loop.
     pub async fn read<T, F>(&self, action: F) -> Result<T, String>
@@ -239,6 +280,32 @@ impl DbState {
         tauri::async_runtime::spawn_blocking(move || db.with_reader(action))
             .await
             .map_err(|error| format!("Database read task failed: {error}"))?
+    }
+
+    /// Runs live FTS work on one isolated connection. A newer query or an
+    /// explicit clear/source switch advances the epoch before taking the
+    /// mutex, so queued and running stale searches stop without interrupting
+    /// any of the three general-purpose readers.
+    pub async fn search_read<T, F>(&self, epoch: u64, action: F) -> Result<Option<T>, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, String> + Send + 'static,
+    {
+        let db = self.clone();
+        tauri::async_runtime::spawn_blocking(move || db.with_search_reader(epoch, action))
+            .await
+            .map_err(|error| format!("Database search task failed: {error}"))?
+    }
+
+    pub fn begin_search(&self) -> u64 {
+        self.inner.search_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn cancel_search(&self, epoch: u64) -> bool {
+        self.inner
+            .search_epoch
+            .compare_exchange(epoch, epoch + 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Async write helper: single writer on the blocking thread pool, keeping
@@ -265,6 +332,19 @@ pub async fn db_get_status(state: State<'_, DbState>) -> Result<DatabaseStatus, 
     tauri::async_runtime::spawn_blocking(move || db.status())
         .await
         .map_err(|error| format!("Database status task failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn articles_begin_search(state: State<'_, DbState>) -> String {
+    state.inner().begin_search().to_string()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn articles_cancel_search(epoch: String, state: State<'_, DbState>) -> Result<bool, String> {
+    let epoch = epoch
+        .parse::<u64>()
+        .map_err(|_| "Invalid search epoch.".to_string())?;
+    Ok(state.inner().cancel_search(epoch))
 }
 
 fn resolve_database_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -405,9 +485,88 @@ mod tests {
         saved::{get_saved_article_by_hash, query_saved_articles, SavedArticleQueryRequest},
         schema::{CREATE_SEARCH_INDEXES, CREATE_TABLES, SCHEMA_VERSION},
         tags::list_tags_with_feed_ids,
+        DbState, DbStateInner, READER_POOL_SIZE,
     };
     use crate::db::models::SavedArticleRecord;
     use rusqlite::{params, Connection};
+    use std::sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    };
+
+    #[test]
+    fn cancelling_search_interrupts_only_the_dedicated_reader() {
+        let readers = (0..READER_POOL_SIZE)
+            .map(|_| Mutex::new(Connection::open_in_memory().expect("open reader")))
+            .collect();
+        let db = DbState {
+            inner: Arc::new(DbStateInner {
+                path: std::path::PathBuf::from(":memory:"),
+                writer: Mutex::new(Connection::open_in_memory().expect("open writer")),
+                readers,
+                next_reader: AtomicUsize::new(0),
+                search_reader: Mutex::new(Connection::open_in_memory().expect("open search reader")),
+                search_epoch: AtomicU64::new(0),
+                previous_shutdown_unclean: false,
+            }),
+        };
+        let epoch = db.inner.search_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        let search_db = db.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let search = std::thread::spawn(move || {
+            search_db.with_search_reader(epoch, |connection| {
+                started_tx.send(()).expect("announce query start");
+                connection
+                    .query_row(
+                        "WITH RECURSIVE count(x) AS (VALUES(0) UNION ALL SELECT x + 1 FROM count WHERE x < 100000000) SELECT sum(x) FROM count",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| format!("long search failed: {error}"))
+            })
+        });
+
+        started_rx.recv().expect("search started");
+        assert!(db.cancel_search(epoch));
+        assert_eq!(
+            search.join().expect("join search").expect("cancel search"),
+            None,
+            "a stale search must resolve as cancellation, not an error"
+        );
+        assert_eq!(
+            db.with_reader(|connection| {
+                connection
+                    .query_row("SELECT 42", [], |row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())
+            })
+            .expect("general reader remains usable"),
+            42,
+            "search cancellation must not interrupt pooled non-search reads"
+        );
+    }
+
+    #[test]
+    fn stale_search_cancellation_does_not_invalidate_a_newer_epoch() {
+        let db = DbState {
+            inner: Arc::new(DbStateInner {
+                path: std::path::PathBuf::from(":memory:"),
+                writer: Mutex::new(Connection::open_in_memory().expect("open writer")),
+                readers: (0..READER_POOL_SIZE)
+                    .map(|_| Mutex::new(Connection::open_in_memory().expect("open reader")))
+                    .collect(),
+                next_reader: AtomicUsize::new(0),
+                search_reader: Mutex::new(Connection::open_in_memory().expect("open search reader")),
+                search_epoch: AtomicU64::new(0),
+                previous_shutdown_unclean: false,
+            }),
+        };
+
+        let first = db.begin_search();
+        let second = db.begin_search();
+        assert!(!db.cancel_search(first), "late cancel for A must not cancel B");
+        assert_eq!(db.inner.search_epoch.load(Ordering::Acquire), second);
+        assert!(db.cancel_search(second), "current epoch remains cancellable");
+    }
 
     #[test]
     fn synthetic_v15_legacy_fixture_round_trips_repository_rows() {
@@ -441,6 +600,7 @@ mod tests {
                 sort_field: None,
                 sort_order: None,
                 search_text: Some("Example".to_string()),
+                search_epoch: None,
                 limit: Some(10),
                 offset: None,
                 cursor_date: None,
@@ -470,6 +630,8 @@ mod tests {
                 limit: Some(10),
                 offset: None,
                 search_text: Some("Saved".to_string()),
+                search_epoch: None,
+                include_total: None,
             },
         )
         .expect("query saved");
@@ -885,6 +1047,7 @@ mod tests {
                 sort_field: None,
                 sort_order: None,
                 search_text: None,
+                search_epoch: None,
                 limit: Some(10),
                 offset: None,
                 cursor_date: None,
@@ -1021,6 +1184,7 @@ mod tests {
                 sort_field: None,
                 sort_order: None,
                 search_text: None,
+                search_epoch: None,
                 limit: Some(10),
                 offset: None,
                 cursor_date: None,
@@ -1053,6 +1217,7 @@ mod tests {
                 sort_field: None,
                 sort_order: None,
                 search_text: None,
+                search_epoch: None,
                 limit: Some(10),
                 offset: None,
                 cursor_date: None,
@@ -1163,6 +1328,7 @@ mod tests {
                 sort_field: None,
                 sort_order: Some("desc".to_string()),
                 search_text: None,
+                search_epoch: None,
                 limit: Some(5),
                 offset: None,
                 cursor_date: None,
@@ -1192,6 +1358,7 @@ mod tests {
                 sort_field: None,
                 sort_order: Some("desc".to_string()),
                 search_text: None,
+                search_epoch: None,
                 limit: Some(3),
                 offset: None,
                 cursor_date: Some("2026-07-14T20:00:00.000Z".to_string()),

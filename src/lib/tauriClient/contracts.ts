@@ -215,6 +215,7 @@ export interface ArticleQueryRequest {
   sortField?: "published_date" | "fetched_date" | "last_read_at";
   sortOrder?: "asc" | "desc";
   searchText?: string;
+  searchEpoch?: string;
   limit?: number;
   offset?: number;
   cursorDate?: ISODateString;
@@ -226,6 +227,7 @@ export interface ArticleQueryResponse {
   articles: ArticleRecord[];
   total: number;
   hasMore: boolean;
+  cancelled: boolean;
 }
 
 export interface SavedArticleRecord extends ArticleFeedMetadata {
@@ -283,11 +285,14 @@ export interface SavedArticleQueryRequest {
   limit?: number;
   offset?: number;
   searchText?: string;
+  searchEpoch?: string;
+  includeTotal?: boolean;
 }
 
 export interface SavedArticleQueryResponse {
   articles: SavedArticleRecord[];
   total: number;
+  cancelled: boolean;
 }
 
 export interface FeedFetchRequest {
@@ -910,6 +915,13 @@ export interface FeedsContract {
 }
 
 export interface ArticlesContract {
+  beginSearch: {
+    response: string;
+  };
+  cancelSearch: {
+    request: { epoch: string };
+    response: boolean;
+  };
   query: {
     request: ArticleQueryRequest;
     response: ArticleQueryResponse;

@@ -12,7 +12,11 @@ import { useDependencyEffect } from '@/hooks/useLifecycleEffects';
 import { motion } from 'motion/react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Article } from '@/types/article';
-import type { ArticleListScrollRequest, ArticleViewOverlayPhase } from '@/contexts/FeedContext';
+import type {
+  ArticleListScrollRequest,
+  ArticleListSearchStatus,
+  ArticleViewOverlayPhase,
+} from '@/contexts/FeedContext';
 import { ArticleListItem } from './ArticleListItem';
 import { ArticleListSkeletonGroup } from './ArticleListSkeleton';
 import { FeedLineLoader } from '@/components/common/FeedLineLoader';
@@ -59,6 +63,7 @@ export interface ArticleListVirtualScrollPaneProps {
   isLoadingMoreArticles: boolean;
   isSearchActive: boolean;
   isSearchDebouncePending: boolean;
+  searchStatus: ArticleListSearchStatus;
   debouncedSearchQuery: string;
   isSavedView: boolean;
   newArticleHashes: Set<string>;
@@ -91,6 +96,7 @@ export const ArticleListVirtualScrollPane = memo(function ArticleListVirtualScro
   isLoadingMoreArticles,
   isSearchActive,
   isSearchDebouncePending,
+  searchStatus,
   debouncedSearchQuery,
   isSavedView,
   newArticleHashes,
@@ -402,7 +408,13 @@ export const ArticleListVirtualScrollPane = memo(function ArticleListVirtualScro
               exit={{ opacity: 1, y: 10 }}
               className="article-list-empty theme-text-secondary"
             >
-              <p>No articles match your search.</p>
+              <p>
+                {searchStatus === 'pending'
+                  ? 'Searching…'
+                  : searchStatus === 'error'
+                    ? 'Search failed. Try another query.'
+                    : 'No articles match your search.'}
+              </p>
             </motion.div>
           ) : null
         ) : (
@@ -480,6 +492,7 @@ function areArticleListVirtualScrollPanePropsEqual(
     && previous.isLoadingMoreArticles === next.isLoadingMoreArticles
     && previous.isSearchActive === next.isSearchActive
     && previous.isSearchDebouncePending === next.isSearchDebouncePending
+    && previous.searchStatus === next.searchStatus
     && previous.debouncedSearchQuery === next.debouncedSearchQuery
     && previous.isSavedView === next.isSavedView
     && previous.totalFeeds === next.totalFeeds

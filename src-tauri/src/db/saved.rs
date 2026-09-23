@@ -14,6 +14,8 @@ pub struct SavedArticleQueryRequest {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub search_text: Option<String>,
+    pub search_epoch: Option<String>,
+    pub include_total: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -21,6 +23,7 @@ pub struct SavedArticleQueryRequest {
 pub struct SavedArticleQueryResponse {
     pub articles: Vec<SavedArticleRecord>,
     pub total: i64,
+    pub cancelled: bool,
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -29,8 +32,33 @@ pub async fn saved_query(
     state: State<'_, DbState>,
 ) -> Result<SavedArticleQueryResponse, String> {
     let db = state.inner().clone();
-    db.read(move |connection| query_saved_articles(connection, request))
-        .await
+    let is_search = request
+        .search_text
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty());
+    if !is_search {
+        return db
+            .read(move |connection| query_saved_articles(connection, request))
+            .await;
+    }
+    let search_epoch = match request.search_epoch.as_deref() {
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| "Invalid saved search epoch.".to_string())?,
+        None => db.begin_search(),
+    };
+
+    match db
+        .search_read(search_epoch, move |connection| query_saved_articles(connection, request))
+        .await?
+    {
+        Some(response) => Ok(response),
+        None => Ok(SavedArticleQueryResponse {
+            articles: Vec::new(),
+            total: 0,
+            cancelled: true,
+        }),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -215,13 +243,17 @@ pub fn query_saved_articles(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let total = connection
-        .query_row(
-            &format!("SELECT COUNT(*) FROM {from_sql} {where_sql}"),
-            params_from_iter(bindings.iter()),
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| format!("Failed to count saved articles: {error}"))?;
+    let total = if request.include_total != Some(false) {
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {from_sql} {where_sql}"),
+                params_from_iter(bindings.iter()),
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("Failed to count saved articles: {error}"))?
+    } else {
+        0
+    };
 
     let mut data_bindings = bindings;
     let mut data_sql = format!(
@@ -275,7 +307,11 @@ pub fn query_saved_articles(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to read saved article row: {error}"))?;
 
-    Ok(SavedArticleQueryResponse { articles, total })
+    Ok(SavedArticleQueryResponse {
+        articles,
+        total,
+        cancelled: false,
+    })
 }
 
 pub fn insert_saved_article(

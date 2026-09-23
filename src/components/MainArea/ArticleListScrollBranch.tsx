@@ -45,6 +45,7 @@ export const ArticleListScrollBranch = memo(function ArticleListScrollBranch({
     isLoadingArticles,
     isLoadingMoreArticles,
     isSavedListLoading,
+    searchStatus,
   } = useFeedCollectionLoading();
   const {
     loadMoreArticles,
@@ -62,7 +63,8 @@ export const ArticleListScrollBranch = memo(function ArticleListScrollBranch({
   const isInitialLoading = isListLoading && articles.length === 0;
   const newArticleHashes = useTransientNewArticleHashes(isSavedView, contextNewArticleHashes);
   const isSearchActive = isSearchOpen && searchQuery.trim().length > 0;
-  const isSearchDebouncePending = searchQuery.trim() !== debouncedSearchQuery.trim();
+  const isSearchDebouncePending = searchQuery.trim() !== debouncedSearchQuery.trim()
+    || (isSearchActive && searchStatus === 'pending');
 
   const sourceKey = selectedFeedId
     ? `feed:${selectedFeedId}`
@@ -94,6 +96,7 @@ export const ArticleListScrollBranch = memo(function ArticleListScrollBranch({
       isLoadingMoreArticles={isLoadingMoreArticles}
       isSearchActive={isSearchActive}
       isSearchDebouncePending={isSearchDebouncePending}
+      searchStatus={searchStatus}
       debouncedSearchQuery={debouncedSearchQuery}
       isSavedView={isSavedView}
       newArticleHashes={newArticleHashes}

@@ -78,7 +78,14 @@ function sanitizePayload(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => !["content", "html", "headers", "requestHeaders", "clipboardText"].includes(key))
+        .filter(([key]) => ![
+          "content",
+          "html",
+          "headers",
+          "requestHeaders",
+          "clipboardText",
+          "searchText",
+        ].includes(key))
         .map(([key, entryValue]) => [key, sanitizePayload(entryValue, depth + 1)]),
     );
   }

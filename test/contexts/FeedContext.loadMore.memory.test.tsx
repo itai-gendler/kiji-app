@@ -34,6 +34,7 @@ vi.mock('@/stores/articleStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/stores/articleStore')>();
   return {
     ...actual,
+    cancelSearch: vi.fn().mockResolvedValue(undefined),
     query: vi.fn(),
     store: vi.fn(),
     getUnreadCount: vi.fn(),

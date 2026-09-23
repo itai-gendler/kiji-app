@@ -105,6 +105,7 @@ export async function query(q: ArticleQuery): Promise<ArticleQueryResult> {
     sortField: toNativeArticleSortField(q.sort?.field),
     sortOrder: q.sort?.order,
     searchText: q.searchText,
+    searchEpoch: q.searchEpoch,
     limit: q.limit,
     offset: q.offset,
     cursorDate: q.cursor?.effectiveDate ?? undefined,
@@ -115,7 +116,16 @@ export async function query(q: ArticleQuery): Promise<ArticleQueryResult> {
   return {
     articles: result.articles.map((record) => recordToArticle(record, { now, forList: true })),
     total: result.total,
+    cancelled: result.cancelled,
   };
+}
+
+export async function beginSearch(): Promise<string> {
+  return tauriClient.articles.beginSearch();
+}
+
+export async function cancelSearch(epoch: string): Promise<boolean> {
+  return tauriClient.articles.cancelSearch(epoch);
 }
 
 export async function store(_feedId: string, articles: Article[]): Promise<number> {

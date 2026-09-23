@@ -13,6 +13,7 @@ export interface ArticleQuery {
     order: "asc" | "desc";
   };
   searchText?: string;
+  searchEpoch?: string;
   limit?: number;
   offset?: number;
   cursor?: {
@@ -26,4 +27,5 @@ export interface ArticleQuery {
 export interface ArticleQueryResult {
   articles: Article[];
   total: number;
+  cancelled?: boolean;
 }

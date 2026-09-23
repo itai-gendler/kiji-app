@@ -16,6 +16,8 @@ import { clearFeedMetadataCacheForTests } from '@/services/feeds/feedMetadataCac
 import { feedNetworkDataResult } from '../helpers/feedNetworkFetchMock';
 
 vi.mock('@/stores/articleStore', () => ({
+  beginSearch: vi.fn().mockResolvedValue('1'),
+  cancelSearch: vi.fn().mockResolvedValue(undefined),
   query: vi.fn(),
   store: vi.fn(),
   getUnreadCount: vi.fn(),

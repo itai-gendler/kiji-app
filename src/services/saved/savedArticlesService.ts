@@ -16,11 +16,24 @@ class SavedArticlesService {
   /**
    * Query articles for Saved smart view with pagination.
    */
-  async querySavedViewArticles(limit?: number, offset?: number, searchText?: string): Promise<{ articles: Article[], total: number }> {
-    const result = await savedArticlesManager.querySavedArticles(limit, offset, searchText);
+  async querySavedViewArticles(
+    limit?: number,
+    offset?: number,
+    searchText?: string,
+    includeTotal?: boolean,
+    searchEpoch?: string,
+  ): Promise<{ articles: Article[], total: number, cancelled?: boolean }> {
+    const result = await savedArticlesManager.querySavedArticles(
+      limit,
+      offset,
+      searchText,
+      includeTotal,
+      searchEpoch,
+    );
     return {
       articles: result.articles.map((savedArticle) => this.toListArticle(savedArticle)),
       total: result.total,
+      cancelled: result.cancelled,
     };
   }
 

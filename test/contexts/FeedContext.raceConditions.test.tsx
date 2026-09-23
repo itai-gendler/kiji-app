@@ -15,6 +15,8 @@ import { clearFeedMetadataCacheForTests } from '@/services/feeds/feedMetadataCac
 import { feedNetworkDataResult } from '../helpers/feedNetworkFetchMock';
 
 vi.mock('@/stores/articleStore', () => ({
+  beginSearch: vi.fn().mockResolvedValue('1'),
+  cancelSearch: vi.fn().mockResolvedValue(undefined),
   query: vi.fn(),
   store: vi.fn(),
   getUnreadCount: vi.fn(),
@@ -966,18 +968,17 @@ describe('FeedContext Cross-Type Race Conditions', () => {
       createArticle('hash-1', 'feed-a'),
       createArticle('hash-2', 'feed-a'),
     ];
-    const searchArticles = [
-      createArticle('needle-1', 'feed-a'),
-      createArticle('needle-2', 'feed-b'),
-    ];
-    const nextSearchArticle = createArticle('needle-3', 'feed-c');
+    const searchArticles = Array.from({ length: 100 }, (_, index) => (
+      createArticle(`needle-${index + 1}`, index % 2 === 0 ? 'feed-a' : 'feed-b')
+    ));
+    const nextSearchArticle = createArticle('needle-101', 'feed-c');
 
     (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
-      if (query.searchText === 'needle' && query.cursor?.hash === 'needle-2') {
-        return Promise.resolve({ articles: [nextSearchArticle], total: 3 });
+      if (query.searchText === 'needle' && query.cursor?.hash === 'needle-100') {
+        return Promise.resolve({ articles: [nextSearchArticle], total: 0 });
       }
       if (query.searchText === 'needle') {
-        return Promise.resolve({ articles: searchArticles, total: 3 });
+        return Promise.resolve({ articles: searchArticles, total: 0 });
       }
       return Promise.resolve({ articles: initialArticles, total: 4 });
     });
@@ -1005,11 +1006,14 @@ describe('FeedContext Cross-Type Race Conditions', () => {
     });
 
     await waitForExpectation(() => {
-      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['needle-1', 'needle-2']);
-      expect(latestContext!.articlesTotalCount).toBe(3);
+      expect(latestContext!.articles).toHaveLength(100);
+      expect(latestContext!.articles[0]?.hash).toBe('needle-1');
+      expect(latestContext!.articles[99]?.hash).toBe('needle-100');
+      expect(latestContext!.articlesTotalKnown).toBe(false);
     });
 
     expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({
+      includeTotal: false,
       limit: 100,
       searchText: 'needle',
       sort: { field: 'publishedDate', order: 'desc' },
@@ -1020,13 +1024,16 @@ describe('FeedContext Cross-Type Race Conditions', () => {
     });
 
     await waitForExpectation(() => {
-      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['needle-1', 'needle-2', 'needle-3']);
+      expect(latestContext!.articles).toHaveLength(101);
+      expect(latestContext!.articles[100]?.hash).toBe('needle-101');
+      expect(latestContext!.articlesTotalCount).toBe(101);
+      expect(latestContext!.articlesTotalKnown).toBe(true);
     });
 
     expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({
       cursor: {
         effectiveDate: '2026-02-25T00:00:00.000Z',
-        hash: 'needle-2',
+        hash: 'needle-100',
       },
       limit: 100,
       includeTotal: false,
@@ -1155,6 +1162,522 @@ describe('FeedContext Cross-Type Race Conditions', () => {
       expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-1-fresh', 'hash-2-fresh']);
       expect(latestContext!.articlesTotalCount).toBe(5);
     });
+  });
+
+  it('cancels a slow search and publishes only the latest query', async () => {
+    const slowSearch = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+    const latestArticles = [createArticle('latest-1', 'feed-a')];
+
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'slow') {
+        return slowSearch.promise;
+      }
+      if (query.searchText === 'latest') {
+        return Promise.resolve({ articles: latestArticles, total: 0 });
+      }
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    await waitForExpectation(() => expect(latestContext!.articles[0]?.hash).toBe('hash-1'));
+
+    (articleStore.cancelSearch as vi.Mock).mockClear();
+    (articleStore.cancelSearch as vi.Mock).mockImplementationOnce(async () => {
+      slowSearch.resolve({ articles: [], total: 0, cancelled: true });
+    });
+
+    let slowCompletion!: Promise<void>;
+    act(() => {
+      slowCompletion = latestContext!.searchCurrentSource('slow');
+    });
+    await waitForExpectation(() => {
+      expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({ searchText: 'slow' }));
+    });
+
+    await act(async () => {
+      await Promise.all([
+        slowCompletion,
+        latestContext!.searchCurrentSource('latest'),
+      ]);
+    });
+
+    expect(articleStore.cancelSearch).toHaveBeenCalledTimes(1);
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['latest-1']);
+    expect(latestContext!.searchStatus).toBe('ready');
+  });
+
+  it('does not let a late unfiltered same-source refresh overwrite search results', async () => {
+    const lateUnfiltered = createDeferred<{ articles: Article[]; total: number }>();
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+    const searchArticles = [createArticle('needle-1', 'feed-a')];
+    let unfilteredQueryCount = 0;
+
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        return Promise.resolve({ articles: searchArticles, total: 0 });
+      }
+      unfilteredQueryCount += 1;
+      if (unfilteredQueryCount === 1) {
+        return Promise.resolve({ articles: initialArticles, total: 1 });
+      }
+      return lateUnfiltered.promise;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    await waitForExpectation(() => expect(latestContext!.articles[0]?.hash).toBe('hash-1'));
+    await act(async () => {
+      await latestContext!.searchCurrentSource('needle');
+    });
+    await waitForExpectation(() => {
+      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['needle-1']);
+    });
+
+    act(() => {
+      void latestContext!.selectSmartView('all');
+    });
+    await waitForExpectation(() => expect(unfilteredQueryCount).toBe(2));
+
+    lateUnfiltered.resolve({
+      articles: [createArticle('late-unfiltered', 'feed-a')],
+      total: 2,
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['needle-1']);
+  });
+
+  it('blocks pagination until the first filtered page is accepted', async () => {
+    const initialArticles = Array.from({ length: 100 }, (_, index) => (
+      createArticle(`hash-${index + 1}`, 'feed-a')
+    ));
+    const searchDeferred = createDeferred<{ articles: Article[]; total: number }>();
+
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        return searchDeferred.promise;
+      }
+      return Promise.resolve({ articles: initialArticles, total: 200 });
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+
+    act(() => {
+      void latestContext!.searchCurrentSource('needle');
+    });
+    await waitForExpectation(() => expect(latestContext!.searchStatus).toBe('pending'));
+
+    await act(async () => {
+      await latestContext!.loadMoreArticles();
+    });
+    expect(
+      (articleStore.query as vi.Mock).mock.calls.filter(
+        ([query]) => query.searchText === 'needle' && query.cursor,
+      ),
+    ).toHaveLength(0);
+
+    searchDeferred.resolve({
+      articles: [createArticle('needle-1', 'feed-a')],
+      total: 0,
+    });
+    await waitForExpectation(() => expect(latestContext!.searchStatus).toBe('ready'));
+  });
+
+  it('cancels in-flight filtered pagination when search is cleared', async () => {
+    const searchPage = Array.from({ length: 100 }, (_, index) => (
+      createArticle(`needle-${index + 1}`, 'feed-a')
+    ));
+    const loadMoreDeferred = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+
+    (articleStore.beginSearch as vi.Mock)
+      .mockResolvedValueOnce('first-page')
+      .mockResolvedValueOnce('load-more-page');
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery & { searchEpoch?: string }) => {
+      if (query.searchText === 'needle' && query.cursor) {
+        return loadMoreDeferred.promise;
+      }
+      if (query.searchText === 'needle') {
+        return Promise.resolve({ articles: searchPage, total: 0 });
+      }
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+    (articleStore.cancelSearch as vi.Mock).mockImplementation(async (epoch: string) => {
+      if (epoch === 'load-more-page') {
+        loadMoreDeferred.resolve({ articles: [], total: 0, cancelled: true });
+      }
+      return true;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await latestContext!.searchCurrentSource('needle');
+    });
+
+    act(() => {
+      void latestContext!.loadMoreArticles();
+    });
+    await waitForExpectation(() => {
+      expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({
+        searchEpoch: 'load-more-page',
+        cursor: expect.objectContaining({ hash: 'needle-100' }),
+      }));
+    });
+
+    await act(async () => {
+      await latestContext!.clearArticleListSearch();
+    });
+    expect(articleStore.cancelSearch).toHaveBeenCalledWith('load-more-page');
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-1']);
+  });
+
+  it('does not let a late pagination epoch hide a newer first-page search', async () => {
+    const searchPage = Array.from({ length: 100 }, (_, index) => (
+      createArticle(`needle-${index + 1}`, 'feed-a')
+    ));
+    const latePaginationEpoch = createDeferred<string>();
+    const newerSearch = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+
+    (articleStore.beginSearch as vi.Mock)
+      .mockResolvedValueOnce('initial-search')
+      .mockImplementationOnce(() => latePaginationEpoch.promise)
+      .mockResolvedValueOnce('newer-search');
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'newer') {
+        return newerSearch.promise;
+      }
+      if (query.searchText === 'needle') {
+        return Promise.resolve({ articles: searchPage, total: 0 });
+      }
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+    (articleStore.cancelSearch as vi.Mock).mockImplementation(async (epoch: string) => {
+      if (epoch === 'newer-search') {
+        newerSearch.resolve({ articles: [], total: 0, cancelled: true });
+      }
+      return true;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    await act(async () => {
+      await latestContext!.searchCurrentSource('needle');
+    });
+
+    act(() => {
+      void latestContext!.loadMoreArticles();
+    });
+    await waitForExpectation(() => expect(articleStore.beginSearch).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      void latestContext!.searchCurrentSource('newer');
+    });
+    await waitForExpectation(() => {
+      expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({
+        searchText: 'newer',
+        searchEpoch: 'newer-search',
+      }));
+    });
+
+    latePaginationEpoch.resolve('late-pagination');
+    await waitForExpectation(() => {
+      expect(articleStore.cancelSearch).toHaveBeenCalledWith('late-pagination');
+    });
+
+    await act(async () => {
+      await latestContext!.clearArticleListSearch();
+    });
+    expect(articleStore.cancelSearch).toHaveBeenCalledWith('newer-search');
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-1']);
+  });
+
+  it('restores the non-search snapshot before delayed native cancellation settles', async () => {
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+    const searchDeferred = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    const cancelDeferred = createDeferred<void>();
+    let unfilteredQueryCount = 0;
+
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        return searchDeferred.promise;
+      }
+      unfilteredQueryCount += 1;
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+    (articleStore.cancelSearch as vi.Mock).mockImplementationOnce(async () => {
+      await cancelDeferred.promise;
+      searchDeferred.resolve({ articles: [], total: 0, cancelled: true });
+      return true;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    await waitForExpectation(() => expect(latestContext!.articles[0]?.hash).toBe('hash-1'));
+
+    act(() => {
+      void latestContext!.searchCurrentSource('needle');
+    });
+    await waitForExpectation(() => expect(latestContext!.searchStatus).toBe('pending'));
+
+    let clearCompletion!: Promise<void>;
+    act(() => {
+      clearCompletion = latestContext!.clearArticleListSearch();
+    });
+    await waitForExpectation(() => {
+      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-1']);
+      expect(latestContext!.searchStatus).toBe('idle');
+    });
+    expect(unfilteredQueryCount).toBe(1);
+
+    cancelDeferred.resolve();
+    await act(async () => {
+      await clearCompletion;
+    });
+    expect(unfilteredQueryCount).toBe(2);
+  });
+
+  it('revalidates the active filter after a same-source refresh', async () => {
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+    const firstSearch = [createArticle('needle-1', 'feed-a')];
+    const refreshedSearch = [
+      createArticle('needle-new', 'feed-a'),
+      createArticle('needle-1', 'feed-a'),
+    ];
+    let searchCount = 0;
+
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        searchCount += 1;
+        return Promise.resolve({
+          articles: searchCount === 1 ? firstSearch : refreshedSearch,
+          total: 0,
+        });
+      }
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    await act(async () => {
+      await latestContext!.searchCurrentSource('needle');
+    });
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['needle-1']);
+
+    await act(async () => {
+      await latestContext!.refreshFeed();
+    });
+    await waitForExpectation(() => {
+      expect(searchCount).toBe(2);
+      expect(latestContext!.articles.map((article) => article.hash)).toEqual([
+        'needle-new',
+        'needle-1',
+      ]);
+    });
+  });
+
+  it('keeps a persisted row mutation ahead of an older search result', async () => {
+    const initialArticles = [createArticle('hash-1', 'feed-a')];
+    const staleSearch = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    const refreshedArticle = { ...createArticle('hash-1', 'feed-a'), read: true };
+    let searchCount = 0;
+
+    (articleStore.beginSearch as vi.Mock)
+      .mockResolvedValueOnce('mutation-a')
+      .mockResolvedValueOnce('mutation-b');
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        searchCount += 1;
+        if (searchCount === 1) {
+          return staleSearch.promise;
+        }
+        return Promise.resolve({ articles: [refreshedArticle], total: 0 });
+      }
+      return Promise.resolve({ articles: initialArticles, total: 1 });
+    });
+    (articleStore.cancelSearch as vi.Mock).mockImplementationOnce(async () => {
+      staleSearch.resolve({ articles: [], total: 0, cancelled: true });
+      return true;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+    act(() => {
+      void latestContext!.searchCurrentSource('needle');
+    });
+    await waitForExpectation(() => expect(searchCount).toBe(1));
+
+    act(() => {
+      latestContext!.updateArticleInList('hash-1', { read: true });
+    });
+    await waitForExpectation(() => {
+      expect(searchCount).toBe(2);
+      expect(latestContext!.articles[0]?.read).toBe(true);
+      expect(latestContext!.searchStatus).toBe('ready');
+    });
+  });
+
+  it('keeps live Saved search inside the cancellable query path', async () => {
+    const savedInitial = [createArticle('saved-1', 'saved')];
+    const savedMatch = [createArticle('saved-match', 'saved')];
+    (savedArticlesService.querySavedViewArticles as vi.Mock).mockImplementation(
+      (_limit: number, _offset: number | undefined, searchText?: string) => (
+        Promise.resolve({
+          articles: searchText ? savedMatch : savedInitial,
+          total: searchText ? 0 : 1,
+        })
+      ),
+    );
+    (savedArticlesService.enrichSavedViewArticlesMeta as vi.Mock).mockImplementation(
+      async (articles: Article[]) => articles,
+    );
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('saved');
+    });
+    await waitForExpectation(() => expect(latestContext!.articles[0]?.hash).toBe('saved-1'));
+    expect(savedArticlesService.enrichSavedViewArticlesMeta).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await latestContext!.searchCurrentSource('match');
+    });
+    expect(latestContext!.articles.map((article) => article.hash)).toEqual(['saved-match']);
+    expect(savedArticlesService.enrichSavedViewArticlesMeta).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels active search work and settles its promise when the provider unmounts', async () => {
+    const searchDeferred = createDeferred<{ articles: Article[]; total: number; cancelled?: boolean }>();
+    (articleStore.beginSearch as vi.Mock).mockResolvedValueOnce('unmount-search');
+    (articleStore.query as vi.Mock).mockImplementation((query: MockArticleQuery) => {
+      if (query.searchText === 'needle') {
+        return searchDeferred.promise;
+      }
+      return Promise.resolve({ articles: [createArticle('hash-1', 'feed-a')], total: 1 });
+    });
+    (articleStore.cancelSearch as vi.Mock).mockImplementationOnce(async () => {
+      searchDeferred.resolve({ articles: [], total: 0, cancelled: true });
+      return true;
+    });
+
+    act(() => {
+      root.render(
+        <FeedProvider>
+          <Probe />
+        </FeedProvider>
+      );
+    });
+    await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    await act(async () => {
+      await latestContext!.selectSmartView('all');
+    });
+
+    let searchCompletion!: Promise<void>;
+    act(() => {
+      searchCompletion = latestContext!.searchCurrentSource('needle');
+    });
+    await waitForExpectation(() => {
+      expect(articleStore.query).toHaveBeenCalledWith(expect.objectContaining({
+        searchText: 'needle',
+        searchEpoch: 'unmount-search',
+      }));
+    });
+
+    act(() => {
+      root.render(<></>);
+    });
+    await searchCompletion;
+
+    expect(articleStore.cancelSearch).toHaveBeenCalledWith('unmount-search');
   });
 
   it('clears stale feed refresh loading when switching to All Items', async () => {

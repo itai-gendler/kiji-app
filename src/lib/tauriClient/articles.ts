@@ -1,6 +1,14 @@
 import type { ArticlesContract } from "./contracts";
 import { invokeCommand, invokeContract } from "./core";
 
+export async function beginSearch(): Promise<string> {
+  return invokeCommand<string>("articles_begin_search");
+}
+
+export async function cancelSearch(epoch: string): Promise<boolean> {
+  return invokeCommand<boolean>("articles_cancel_search", { epoch });
+}
+
 export async function query(
   request: ArticlesContract["query"]["request"],
 ): Promise<ArticlesContract["query"]["response"]> {

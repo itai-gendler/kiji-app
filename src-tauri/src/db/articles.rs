@@ -23,6 +23,7 @@ pub struct ArticleQueryRequest {
     pub sort_field: Option<String>,
     pub sort_order: Option<String>,
     pub search_text: Option<String>,
+    pub search_epoch: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     pub cursor_date: Option<String>,
@@ -36,6 +37,7 @@ pub struct ArticleQueryResponse {
     pub articles: Vec<ArticleRecord>,
     pub total: i64,
     pub has_more: bool,
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,8 +58,32 @@ pub async fn articles_query(
     state: State<'_, DbState>,
 ) -> Result<ArticleQueryResponse, String> {
     let db = state.inner().clone();
-    db.read(move |connection| query_articles(connection, request))
-        .await
+    let is_search = request
+        .search_text
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty());
+    if !is_search {
+        return db.read(move |connection| query_articles(connection, request)).await;
+    }
+    let search_epoch = match request.search_epoch.as_deref() {
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| "Invalid article search epoch.".to_string())?,
+        None => db.begin_search(),
+    };
+
+    match db
+        .search_read(search_epoch, move |connection| query_articles(connection, request))
+        .await?
+    {
+        Some(response) => Ok(response),
+        None => Ok(ArticleQueryResponse {
+            articles: Vec::new(),
+            total: 0,
+            has_more: false,
+            cancelled: true,
+        }),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -502,7 +528,6 @@ pub fn query_articles(
     let grouped_source_fast_path = has_source_filter
         && !single_feed_only
         && !sort_last_read
-        && normalized_search_text.is_none()
         && read_filter.is_none()
         && request.starred.is_none()
         && saved_filter.is_none();
@@ -615,6 +640,14 @@ pub fn query_articles(
         } else {
             format!(" HAVING {}", having_conditions.join(" AND "))
         };
+        let page_from_sql = if normalized_search_text.is_some() {
+            "articles_search \
+             JOIN articles search_article ON search_article.rowid = articles_search.rowid \
+             JOIN article_feed_items afi INDEXED BY idx_article_feed_items_hash \
+               ON afi.article_hash = search_article.hash"
+        } else {
+            "article_feed_items afi"
+        };
         format!(
             r#"
             SELECT
@@ -644,7 +677,7 @@ pub fn query_articles(
               SELECT
                 afi.article_hash AS article_hash,
                 MAX({page_sort_expr}) AS sort_date
-              FROM article_feed_items afi
+              FROM {page_from_sql}
               {data_where}
               GROUP BY afi.article_hash
               {having_sql}
@@ -732,6 +765,7 @@ pub fn query_articles(
         articles,
         total,
         has_more,
+        cancelled: false,
     })
 }
 
@@ -1170,6 +1204,100 @@ mod tests {
             .expect("insert article/feed mapping");
     }
 
+    #[test]
+    fn station_search_treats_operator_words_as_literals_and_dedupes_mappings() {
+        let connection = setup_connection();
+        insert_feed(&connection, "f1");
+        insert_feed(&connection, "f2");
+        connection
+            .execute(
+                "INSERT INTO tags (name, created_at) VALUES ('Tech', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("insert tag");
+        for feed_id in ["f1", "f2"] {
+            connection
+                .execute(
+                    "INSERT INTO feed_tags (feed_id, tag_name) VALUES (?1, 'Tech')",
+                    params![feed_id],
+                )
+                .expect("attach feed to tag");
+        }
+        connection
+            .execute(
+                "INSERT INTO articles (hash, feed_id, title, description, fetched_date) VALUES ('operator-match', 'f1', 'AND now for something literal', '', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("insert searchable article");
+        insert_mapping(&connection, "f1", "operator-match");
+        insert_mapping(&connection, "f2", "operator-match");
+
+        let page = query_articles(
+            &connection,
+            ArticleQueryRequest {
+                feed_id: None,
+                feed_ids: None,
+                tag_name: Some("Tech".to_string()),
+                unread_only: None,
+                saved_only: None,
+                read: None,
+                starred: None,
+                saved: None,
+                sort_field: Some("published_date".to_string()),
+                sort_order: Some("desc".to_string()),
+                search_text: Some("AND".to_string()),
+                search_epoch: None,
+                limit: Some(100),
+                offset: None,
+                cursor_date: None,
+                cursor_hash: None,
+                include_total: Some(false),
+            },
+        )
+        .expect("query station search");
+
+        assert_eq!(page.total, 0, "live search must skip the exact count pass");
+        assert!(!page.cancelled);
+        assert_eq!(
+            page.articles
+                .iter()
+                .map(|article| article.hash.as_str())
+                .collect::<Vec<_>>(),
+            vec!["operator-match"],
+            "overlapping station mappings must return one article row"
+        );
+
+        let mut plan = connection
+            .prepare(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT afi.article_hash
+                FROM articles_search
+                JOIN articles search_article ON search_article.rowid = articles_search.rowid
+                JOIN article_feed_items afi INDEXED BY idx_article_feed_items_hash
+                  ON afi.article_hash = search_article.hash
+                WHERE afi.feed_id IN (
+                  SELECT feed_id FROM feed_tags WHERE tag_name = ?1
+                )
+                  AND articles_search MATCH ?2
+                GROUP BY afi.article_hash
+                LIMIT 100
+                "#,
+            )
+            .expect("prepare search query plan");
+        let details = plan
+            .query_map(params!["Tech", "\"AND\"*"], |row| row.get::<_, String>(3))
+            .expect("query search plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read search plan");
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("idx_article_feed_items_hash")),
+            "station search must probe memberships by article hash: {details:?}"
+        );
+    }
+
     fn article_exists(connection: &Connection, hash: &str) -> bool {
         connection
             .query_row(
@@ -1279,6 +1407,7 @@ mod tests {
             sort_field: Some("last_read_at".to_string()),
             sort_order: Some("desc".to_string()),
             search_text: None,
+            search_epoch: None,
             limit: Some(limit),
             offset: None,
             cursor_date: cursor_date.map(str::to_string),

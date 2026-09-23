@@ -482,7 +482,7 @@ fn conditional_headers(feed: &FeedRecord, force_refresh: bool) -> (Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::FeedRecord;
+    use crate::db::{FeedRecord, SchedulerFeedRow};
 
     fn feed_with_headers(etag: Option<&str>, last_modified: Option<&str>) -> FeedRecord {
         FeedRecord {
