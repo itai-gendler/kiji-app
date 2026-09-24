@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## [1.3.0] - 2026-09-24
+
+### Fixed
+
+- Long-session WebContent growth during interval refresh: scheduler wakes share a `wakeId` across event and eval (including sleep/resume), native cycles cancel by `cycleId`/`request_id`, station pause keeps one active background cycle until drain, and planning no longer pulls favicon blobs into the renderer.
+- Article-list search stays correct while feeds sync: generation-safe filter pages, FTS membership lookup, and refresh/read/save revalidation.
+- Article-list loading shimmer fills the items pane on tall windows instead of stretching to the viewport.
+- Warm station lists refresh from SQLite after an interval cycle instead of keeping a stale snapshot.
+- Sidebar drag-and-sort ranking, v17 migration, reorder writes, import throughput, and TagManager feed-cache growth.
+
+### Added
+
+- Read library item.
+- Draggable header areas.
+- Footer sync copy named from the in-flight refresh (library, one feed, or station).
+- Windows/Linux in-app KiJi menu category.
+
+### Changed
+
+- Station names paint before favicon blobs load. Unstationed Library and restore lookup use a slim sidebar snapshot.
+
 ## [1.2.0] - 2026-09-08
 
 Reliability and system-fix release after 1.1.1: Windows window open, article-list totals, sidebar, startup, and security.
