@@ -18,6 +18,8 @@
     "test": "vitest run --config vitest.config.ts",
     "test:ci": "vitest run --config vitest.config.ts --retry 2",
     "release:test": "node scripts/monitor-release-test.mjs",
+    "storybook": "storybook dev -p 6006",
+    "build:storybook": "storybook build",
     "test:watch": "vitest --config vitest.config.ts",
     "test:parity": "vitest run test/parity",
     "test:parity:db": "cargo test --manifest-path src-tauri/Cargo.toml synthetic_v13 synthetic_v15",
@@ -81,6 +83,7 @@
     "turndown": "^7.2.4"
   },
   "devDependencies": {
+    "@storybook/react-vite": "10.6.1",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
@@ -92,6 +95,7 @@
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^26.1.0",
+    "storybook": "10.6.1",
     "typescript": "~5.8.3",
     "vite": "^7.3.6",
     "vitest": "^4.1.8"

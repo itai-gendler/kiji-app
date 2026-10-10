@@ -1,0 +1,74 @@
+html,
+body,
+#storybook-root {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.sb-show-main.sb-main-fullscreen,
+.sb-show-main.sb-main-centered {
+  padding: 0;
+}
+
+#storybook-root {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--app-window-radius);
+}
+
+.theme-debug-backdrop {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--theme-text-primary);
+  background:
+    radial-gradient(circle at 15% 15%, rgba(0, 122, 255, 0.28), transparent 38%),
+    radial-gradient(circle at 85% 75%, rgba(139, 92, 246, 0.24), transparent 42%),
+    linear-gradient(145deg, #e9edf4, #cfd8e7);
+}
+
+html[data-theme="dark"] .theme-debug-backdrop {
+  background:
+    radial-gradient(circle at 15% 15%, rgba(10, 132, 255, 0.24), transparent 38%),
+    radial-gradient(circle at 85% 75%, rgba(175, 82, 222, 0.2), transparent 42%),
+    linear-gradient(145deg, #20242c, #101216);
+}
+
+.theme-debug-surface {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.theme-debug-sidebar-frame {
+  width: 300px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: 12px 0 42px rgba(20, 30, 45, 0.14);
+}
+
+.theme-debug-list-frame {
+  width: min(520px, 100vw);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: 12px 0 42px rgba(20, 30, 45, 0.14);
+}
+
+.theme-debug-article-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
