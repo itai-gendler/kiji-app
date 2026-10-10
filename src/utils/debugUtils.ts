@@ -6,7 +6,6 @@
  */
 
 import { storage } from '@/services/storage/storageFactory';
-import { APP_NAME } from '@/config/appIdentity';
 import { appToastService } from '@/services/ui/appToastService';
 
 /**
@@ -29,7 +28,7 @@ export async function clearAllConfigs(): Promise<void> {
 
     // Clear IndexedDB databases
     if (typeof indexedDB !== 'undefined') {
-      const databases = [`${APP_NAME}DB`];
+      const databases = ['KiJiDB'];
       for (const dbName of databases) {
         try {
           await new Promise<void>((resolve, reject) => {

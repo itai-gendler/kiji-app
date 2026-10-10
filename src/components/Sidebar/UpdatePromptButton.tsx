@@ -1,4 +1,5 @@
 import React from 'react';
+import { APP_OFFICIAL_NAME } from '@/config/appIdentity';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import { useAppUpdatePrompt } from '@/hooks/useAppUpdatePrompt';
 import './UpdatePromptButton.css';
@@ -10,7 +11,7 @@ export const UpdatePromptButton: React.FC = () => {
     return null;
   }
 
-  const tooltip = `KiJi ${availability.latestVersion} is available`;
+  const tooltip = `${APP_OFFICIAL_NAME} ${availability.latestVersion} is available`;
 
   return (
     <button

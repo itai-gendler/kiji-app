@@ -7,7 +7,7 @@ import {
 const FILE_APP_CLUSTER_IDS = ['about', 'check-updates', 'settings', 'quit'] as const;
 
 describe('appMenuModel', () => {
-  it('builds Windows KiJi/File/View/Subscriptions/Help top-level menus', () => {
+  it('builds Windows Reader/File/View/Subscriptions/Help top-level menus', () => {
     const tree = buildWindowsAppMenuTree({ theme: 'auto', libraryView: null });
     expect(tree.map((menu) => menu.id)).toEqual([
       'kiji',
@@ -16,6 +16,8 @@ describe('appMenuModel', () => {
       'subscriptions',
       'help',
     ]);
+    expect(tree[0]?.label).toBe('Reader');
+    expect(tree[0]?.accessKey).toBe('k');
   });
 
   it('marks theme and library check items from state', () => {
@@ -75,7 +77,7 @@ describe('appMenuModel', () => {
     expect(isInAppMenuBarOs('macos')).toBe(false);
   });
 
-  it('groups About KiJi and Check for Updates above Settings in KiJi', () => {
+  it('groups About KiJi Reader and Check for Updates above Settings in Reader', () => {
     const tree = buildWindowsAppMenuTree({ theme: 'auto', libraryView: null });
     const kiji = tree.find((menu) => menu.id === 'kiji');
     expect(kiji).toBeDefined();
@@ -93,8 +95,10 @@ describe('appMenuModel', () => {
     const checkUpdates = kiji?.items.find(
       (item) => item.kind === 'item' && item.id === 'check-updates',
     );
-    expect(about?.kind === 'item' && about.label).toBe('About KiJi');
+    expect(about?.kind === 'item' && about.label).toBe('About KiJi Reader');
     expect(checkUpdates?.kind === 'item' && checkUpdates.label).toBe('Check for Updates');
+    const quit = kiji?.items.find((item) => item.kind === 'item' && item.id === 'quit');
+    expect(quit?.kind === 'item' && quit.label).toBe('Quit Reader');
 
     const file = tree.find((menu) => menu.id === 'file');
     const fileIds = file?.items.map((item) => item.id) ?? [];
@@ -106,7 +110,7 @@ describe('appMenuModel', () => {
     expect(help?.items.some((item) => item.id === 'about')).toBe(false);
   });
 
-  it('renames Check for Updates to Update KiJi when an update is available', () => {
+  it('renames Check for Updates to Update KiJi Reader when an update is available', () => {
     const tree = buildWindowsAppMenuTree({
       theme: 'auto',
       libraryView: null,
@@ -116,7 +120,7 @@ describe('appMenuModel', () => {
     const checkUpdates = kiji?.items.find(
       (item) => item.kind === 'item' && item.id === 'check-updates',
     );
-    expect(checkUpdates?.kind === 'item' && checkUpdates.label).toBe('Update KiJi');
+    expect(checkUpdates?.kind === 'item' && checkUpdates.label).toBe('Update KiJi Reader');
 
     const file = tree.find((menu) => menu.id === 'file');
     expect(file?.items.some((item) => item.id === 'check-updates')).toBe(false);

@@ -1,5 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { APP_NAME, APP_WEBSITE_URL, CONTACT_EMAIL_ADDRESS } from '@/config/appIdentity';
+import { APP_OFFICIAL_NAME, APP_WEBSITE_URL, CONTACT_EMAIL_ADDRESS } from '@/config/appIdentity';
 import type { AppMenuCommand } from '@/types/appMenu';
 import { publishAppMenuCommand } from '@/services/ui/appMenuCommandBus';
 import { logger } from '@/services/logger';
@@ -34,7 +34,7 @@ async function dispatchLocalAction(action: AppMenuLocalAction): Promise<void> {
       await getCurrentWindow().close();
       return;
     case 'helpSupport': {
-      const subject = encodeURIComponent(`${APP_NAME} Support`);
+      const subject = encodeURIComponent(`${APP_OFFICIAL_NAME} Support`);
       await window.kijiAPI?.openExternal(
         `mailto:${CONTACT_EMAIL_ADDRESS}?subject=${subject}`,
       );

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- The application menu and the macOS menu-bar name are **Reader**. About, update copy, and mail subjects use the official name **KiJi Reader**. The app bundle stays `KiJi.app`.
+
 ## [1.3.0] - 2026-09-24
 
 ### Fixed

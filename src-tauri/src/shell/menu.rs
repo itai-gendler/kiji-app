@@ -7,7 +7,8 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 
-const APP_NAME: &str = "KiJi";
+const APP_MENU_NAME: &str = "Reader";
+const APP_OFFICIAL_NAME: &str = "KiJi Reader";
 const CONTACT_EMAIL: &str = "hello@yomilab.app";
 const APP_WEBSITE_URL: &str = "https://kiji.yomilab.app";
 
@@ -123,8 +124,9 @@ impl ApplicationMenu {
             None::<&str>,
         )
         .map_err(menu_error)?;
+        let about_label = format!("About {APP_OFFICIAL_NAME}");
         let about_item =
-            MenuItem::with_id(app, MENU_ABOUT, "About KiJi", true, None::<&str>).map_err(menu_error)?;
+            MenuItem::with_id(app, MENU_ABOUT, &about_label, true, None::<&str>).map_err(menu_error)?;
 
         let handles = ApplicationMenu {
             runtime: Mutex::new(AppMenuRuntimeState {
@@ -148,7 +150,7 @@ impl ApplicationMenu {
         let app_submenu = if cfg!(target_os = "macos") {
             Submenu::with_items(
                 app,
-                APP_NAME,
+                APP_MENU_NAME,
                 true,
                 &[
                     &about_item,
@@ -163,9 +165,10 @@ impl ApplicationMenu {
             )
             .map_err(menu_error)?
         } else {
+            let quit_label = format!("Quit {APP_MENU_NAME}");
             Submenu::with_items(
                 app,
-                APP_NAME,
+                APP_MENU_NAME,
                 true,
                 &[
                     &about_item,
@@ -173,7 +176,7 @@ impl ApplicationMenu {
                     &PredefinedMenuItem::separator(app).map_err(menu_error)?,
                     &settings_item,
                     &PredefinedMenuItem::separator(app).map_err(menu_error)?,
-                    &PredefinedMenuItem::quit(app, Some(&format!("Quit {APP_NAME}")))
+                    &PredefinedMenuItem::quit(app, Some(quit_label.as_str()))
                         .map_err(menu_error)?,
                 ],
             )
@@ -406,7 +409,7 @@ impl ApplicationMenu {
             MENU_ADD_SUBSCRIPTION => emit_menu_command(app, AppMenuCommand::OpenAddSubscription),
             MENU_IMPORT_FEEDS => emit_menu_command(app, AppMenuCommand::ImportFeeds),
             MENU_HELP_SUPPORT => {
-                let subject = format!("{APP_NAME} Support");
+                let subject = format!("{APP_OFFICIAL_NAME} Support");
                 let url = format!(
                     "mailto:{CONTACT_EMAIL}?{}",
                     form_urlencoded(&[("subject", subject.as_str())])
@@ -449,9 +452,9 @@ impl ApplicationMenu {
 
         if let Some(update_available) = patch.update_available {
             let label = if update_available {
-                "Update KiJi"
+                format!("Update {APP_OFFICIAL_NAME}")
             } else {
-                "Check for Updates"
+                "Check for Updates".to_string()
             };
             self.check_updates
                 .set_text(label)

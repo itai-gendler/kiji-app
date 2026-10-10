@@ -1,6 +1,7 @@
 import { getVersion } from '@tauri-apps/api/app';
 import {
   APP_DOWNLOADS_URL,
+  APP_OFFICIAL_NAME,
   APP_RELEASE_MANIFEST_URL,
   APP_WEBSITE_URL,
 } from '@/config/appIdentity';
@@ -167,7 +168,7 @@ function buildSummary(manifest: ReleaseManifest): string {
   if (manifest.notesUrl) {
     return truncateSummary(`See release notes on ${APP_WEBSITE_URL}.`);
   }
-  return truncateSummary(`KiJi ${manifest.version} is available.`);
+  return truncateSummary(`${APP_OFFICIAL_NAME} ${manifest.version} is available.`);
 }
 
 function resolveDownloadUrl(manifest: ReleaseManifest): string {

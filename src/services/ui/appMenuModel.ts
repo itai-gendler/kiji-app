@@ -1,4 +1,4 @@
-import { APP_NAME } from '@/config/appIdentity';
+import { APP_MENU_NAME, APP_OFFICIAL_NAME } from '@/config/appIdentity';
 import type { AppMenuCommand, AppMenuState } from '@/types/appMenu';
 
 export type AppMenuLocalAction =
@@ -42,19 +42,19 @@ export function buildWindowsAppMenuTree(state: AppMenuState): AppMenuTopLevel[] 
   return [
     {
       id: 'kiji',
-      label: APP_NAME,
+      label: APP_MENU_NAME,
       accessKey: 'k',
       items: [
         {
           kind: 'item',
           id: 'about',
-          label: `About ${APP_NAME}`,
+          label: `About ${APP_OFFICIAL_NAME}`,
           action: { type: 'about' },
         },
         {
           kind: 'item',
           id: 'check-updates',
-          label: state.updateAvailable ? `Update ${APP_NAME}` : 'Check for Updates',
+          label: state.updateAvailable ? `Update ${APP_OFFICIAL_NAME}` : 'Check for Updates',
           action: { type: 'checkUpdates' },
         },
         { kind: 'separator', id: 'kiji-sep-app' },
@@ -69,7 +69,7 @@ export function buildWindowsAppMenuTree(state: AppMenuState): AppMenuTopLevel[] 
         {
           kind: 'item',
           id: 'quit',
-          label: `Quit ${APP_NAME}`,
+          label: `Quit ${APP_MENU_NAME}`,
           action: { type: 'quit' },
         },
       ],

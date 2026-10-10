@@ -1,4 +1,9 @@
-export const APP_NAME = 'KiJi';
+/** Short name in the macOS menu bar and the Windows/Linux app menu. */
+export const APP_MENU_NAME = 'Reader';
+
+/** Official product name (About, updates, mail subjects, Dock/Launchpad). */
+export const APP_OFFICIAL_NAME = 'KiJi Reader';
+
 export const APP_SLUG = 'kiji';
 
 export const DATABASE_FILE_NAME = `${APP_SLUG}.db`;

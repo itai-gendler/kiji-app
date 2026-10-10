@@ -93,6 +93,8 @@
     "active": true,
     "targets": "all",
     "macOS": {
+      "bundleName": "Reader",
+      "infoPlist": "./macos-display.plist",
       "entitlements": "./Entitlements.plist",
       "signingIdentity": "-"
     },

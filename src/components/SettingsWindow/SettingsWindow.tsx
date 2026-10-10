@@ -18,7 +18,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useSystemAccentColor } from '@/hooks/useSystemAccentColor';
 import { SHORTCUT_LABELS, isCloseOnEscapeShortcut, keybindingService } from '@/services/shortcuts/shortcutService';
 import { logger } from '@/services/logger';
-import { APP_NAME, CONTACT_EMAIL_ADDRESS } from '@/config/appIdentity';
+import { APP_OFFICIAL_NAME, CONTACT_EMAIL_ADDRESS } from '@/config/appIdentity';
 import { useMountEffect } from '@/hooks/useLifecycleEffects';
 import SettingsIcon from '@mui/icons-material/Settings';
 import PaletteOutlinedIcon from '@mui/icons-material/PaletteOutlined';
@@ -900,7 +900,7 @@ export const SettingsWindow: React.FC = () => {
     setEmailStatus(null);
     setIsOpeningContactEmail(true);
     try {
-      await openMailClient(`${APP_NAME} Support`);
+      await openMailClient(`${APP_OFFICIAL_NAME} Support`);
       setEmailStatus('Opened your default email client.');
     } catch (error) {
       setEmailStatus('Failed to open your default email client.');
@@ -924,7 +924,7 @@ export const SettingsWindow: React.FC = () => {
     setFeedbackStatus(null);
     setIsSubmittingFeedback(true);
     try {
-      await openMailClient(`${APP_NAME} Feedback`, trimmedFeedback);
+      await openMailClient(`${APP_OFFICIAL_NAME} Feedback`, trimmedFeedback);
       setFeedbackStatus('Opened your default email client with your feedback draft.');
       setFeedbackDraft('');
     } catch (error) {

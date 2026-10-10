@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { APP_NAME } from '@/config/appIdentity';
+import { APP_OFFICIAL_NAME } from '@/config/appIdentity';
 import { useSecondaryWindowPayload } from '@/hooks/useSecondaryWindowPayload';
 import { useSystemAccentColor } from '@/hooks/useSystemAccentColor';
 import { tauriClient } from '@/lib/tauriClient';
@@ -206,7 +206,7 @@ export const UpdateWindow: React.FC = () => {
     return (
       <main className="app-info-window-placeholder" data-window="about-loading">
         <LoadingGlyph />
-        <h1>About {APP_NAME}</h1>
+        <h1>About {APP_OFFICIAL_NAME}</h1>
         <p>Loading…</p>
       </main>
     );
@@ -223,7 +223,7 @@ export const UpdateWindow: React.FC = () => {
         data-component="about-window-chrome"
       />
       <div className="app-info-window-body">
-        <h1 className="app-info-window-title">About {APP_NAME}</h1>
+        <h1 className="app-info-window-title">About {APP_OFFICIAL_NAME}</h1>
         <p className="app-info-window-version-line">
           Version {payload.currentVersion}
         </p>
@@ -238,7 +238,7 @@ export const UpdateWindow: React.FC = () => {
         {!checking && update ? (
           <>
             <p className="app-info-window-version-line">
-              {APP_NAME} {update.latestVersion} is available.
+              {APP_OFFICIAL_NAME} {update.latestVersion} is available.
               {releasedAt ? ` Released ${releasedAt}.` : ''}
             </p>
             {update.summary ? (
@@ -250,7 +250,7 @@ export const UpdateWindow: React.FC = () => {
                 className="app-info-window-primary-button has-no-drag"
                 onClick={handleDownload}
               >
-                Update {APP_NAME}
+                Update {APP_OFFICIAL_NAME}
               </button>
               {update.notesUrl ? (
                 <button
@@ -267,7 +267,7 @@ export const UpdateWindow: React.FC = () => {
 
         {!checking && !update && checkStatus === 'up-to-date' ? (
           <p className="app-info-window-summary">
-            {APP_NAME} is up to date.
+            {APP_OFFICIAL_NAME} is up to date.
           </p>
         ) : null}
 
