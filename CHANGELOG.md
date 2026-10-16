@@ -2,9 +2,20 @@
 
 ## Unreleased
 
+## [1.4.0] - 2026-10-16
+
+### Added
+
+- Reader themes: 13 book-style themes (Paper, Sepia, Calm, Eye Care, Washi, Parchment, Newsprint, E-Ink, Solarized, Quiet, Midnight, OLED Night, High Contrast), each with a light and a dark version. Choose one in Settings → Appearance → Theme → Reader theme.
+
 ### Changed
 
 - The application menu and the macOS menu-bar name are **Reader**. About, update copy, and mail subjects use the official name **KiJi Reader**. The app bundle stays `KiJi.app`.
+
+### Fixed
+
+- A rare timing error no longer fails the build checks while every test passes.
+- Security updates for bundled libraries (undici, vitest, DOMPurify, source-map-js).
 
 ## [1.3.0] - 2026-09-24
 
