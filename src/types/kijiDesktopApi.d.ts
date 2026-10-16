@@ -20,13 +20,8 @@ import type {
 type SystemAppIconVariant =
   | 'light'
   | 'dark'
-  | 'sunset'
-  | 'sunset-dark'
-  | 'cosmos'
-  | 'cosmos-dark'
-  | 'particle'
-  | 'particle-dark'
-  | 'wave';
+  | 'ripple'
+  | 'ripple-dark';
 
 export interface KijiDesktopAPI {
   fetchFeed: (url: string, options?: { requestId?: string }) => Promise<string>;

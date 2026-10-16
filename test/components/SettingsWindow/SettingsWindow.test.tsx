@@ -283,22 +283,21 @@ describe("SettingsWindow", () => {
     expect(window.kijiAPI.notifySettingsChanged).toHaveBeenCalled();
   });
 
-  it("shows Light as the default app icon and keeps the other built-in choices", async () => {
+  it("offers only Ripple, Ripple Dark, Light and Dark app icons", async () => {
     render(<SettingsWindow />);
 
     clickSidebarCategory("Appearance");
 
     const iconGroup = await screen.findByRole("group", { name: "Default app icon" });
+    const labels = within(iconGroup).getAllByRole("button").map((button) => button.textContent);
+    expect(labels).toEqual(["Ripple", "Ripple Dark", "Light", "Dark"]);
+    // The mocked stored state is "light", so Light stays selected.
     expect(within(iconGroup).getByRole("button", { name: "Light" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(iconGroup).getByRole("button", { name: "Wave" })).toBeInTheDocument();
-    expect(within(iconGroup).getByRole("button", { name: "Cosmos" })).toBeInTheDocument();
-    expect(within(iconGroup).getByRole("button", { name: "Cosmos Dark" })).toBeInTheDocument();
-    expect(within(iconGroup).getByRole("button", { name: "Sunset" })).toBeInTheDocument();
 
-    fireEvent.click(within(iconGroup).getByRole("button", { name: "Cosmos" }));
+    fireEvent.click(within(iconGroup).getByRole("button", { name: "Ripple Dark" }));
 
     await waitFor(() => {
-      expect(window.kijiAPI.setSystemAppIconVariant).toHaveBeenCalledWith("cosmos");
+      expect(window.kijiAPI.setSystemAppIconVariant).toHaveBeenCalledWith("ripple-dark");
     });
   });
 

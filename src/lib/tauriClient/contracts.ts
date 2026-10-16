@@ -543,13 +543,8 @@ export interface ShareService {
 export type SystemAppIconVariant =
   | "light"
   | "dark"
-  | "sunset"
-  | "sunset-dark"
-  | "cosmos"
-  | "cosmos-dark"
-  | "particle"
-  | "particle-dark"
-  | "wave"
+  | "ripple"
+  | "ripple-dark"
   | "custom";
 
 export interface SystemAppIconState {
@@ -1139,13 +1134,8 @@ export interface SystemContract {
       iconVariant:
         | "light"
         | "dark"
-        | "sunset"
-        | "sunset-dark"
-        | "cosmos"
-        | "cosmos-dark"
-        | "particle"
-        | "particle-dark"
-        | "wave";
+        | "ripple"
+        | "ripple-dark";
     };
   };
   appIconSetVariant: {
@@ -1153,13 +1143,8 @@ export interface SystemContract {
       variant:
         | "light"
         | "dark"
-        | "sunset"
-        | "sunset-dark"
-        | "cosmos"
-        | "cosmos-dark"
-        | "particle"
-        | "particle-dark"
-        | "wave";
+        | "ripple"
+        | "ripple-dark";
     };
     response: SystemContract["appIconGetState"]["response"];
   };

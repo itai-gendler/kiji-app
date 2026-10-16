@@ -12,13 +12,8 @@ const APP_ICON_STATE_FILE: &str = "app-icon-state.json";
 const CUSTOM_ICON_BASENAME: &str = "custom-app-icon";
 const LIGHT_ICON_RESOURCE_DIR: &str = "icons";
 const DARK_ICON_RESOURCE_DIR: &str = "icons-dark";
-const SUNSET_ICON_RESOURCE_DIR: &str = "icons-sunset";
-const SUNSET_DARK_ICON_RESOURCE_DIR: &str = "icons-sunset-dark";
-const COSMOS_ICON_RESOURCE_DIR: &str = "icons-cosmos";
-const COSMOS_DARK_ICON_RESOURCE_DIR: &str = "icons-cosmos-dark";
-const PARTICLE_ICON_RESOURCE_DIR: &str = "icons-particle";
-const PARTICLE_DARK_ICON_RESOURCE_DIR: &str = "icons-particle-dark";
-const WAVE_ICON_RESOURCE_DIR: &str = "icons-wave";
+const RIPPLE_ICON_RESOURCE_DIR: &str = "icons-ripple";
+const RIPPLE_DARK_ICON_RESOURCE_DIR: &str = "icons-ripple-dark";
 const RUNTIME_ICON_FILE_NAME: &str = "icon.png";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,18 +21,15 @@ const RUNTIME_ICON_FILE_NAME: &str = "icon.png";
 pub enum SystemAppIconVariant {
     Light,
     Dark,
-    Sunset,
-    SunsetDark,
-    Cosmos,
-    CosmosDark,
-    Particle,
-    ParticleDark,
-    Wave,
+    Ripple,
+    RippleDark,
 }
 
+/// Packaged default: Ripple (light plate). Must match `bundle.icon` (`icons-ripple/*`)
+/// and Settings `DEFAULT_SYSTEM_APP_ICON_VARIANT`.
 impl Default for SystemAppIconVariant {
     fn default() -> Self {
-        Self::Light
+        Self::Ripple
     }
 }
 
@@ -364,13 +356,8 @@ fn built_in_icon_folder(variant: SystemAppIconVariant) -> &'static str {
     match variant {
         SystemAppIconVariant::Light => LIGHT_ICON_RESOURCE_DIR,
         SystemAppIconVariant::Dark => DARK_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::Sunset => SUNSET_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::SunsetDark => SUNSET_DARK_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::Cosmos => COSMOS_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::CosmosDark => COSMOS_DARK_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::Particle => PARTICLE_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::ParticleDark => PARTICLE_DARK_ICON_RESOURCE_DIR,
-        SystemAppIconVariant::Wave => WAVE_ICON_RESOURCE_DIR,
+        SystemAppIconVariant::Ripple => RIPPLE_ICON_RESOURCE_DIR,
+        SystemAppIconVariant::RippleDark => RIPPLE_DARK_ICON_RESOURCE_DIR,
     }
 }
 
@@ -497,17 +484,17 @@ mod tests {
     use super::{deserialize_stored_icon_variant, StoredAppIconState, SystemAppIconVariant};
 
     #[test]
-    fn default_icon_variant_is_light() {
-        assert_eq!(SystemAppIconVariant::default(), SystemAppIconVariant::Light);
+    fn default_icon_variant_is_ripple() {
+        assert_eq!(SystemAppIconVariant::default(), SystemAppIconVariant::Ripple);
     }
 
     #[test]
     fn stored_icon_state_parses_known_variants() {
         let stored: StoredAppIconState = serde_json::from_str(
-            r#"{"iconPath":null,"iconVariant":"cosmos"}"#,
+            r#"{"iconPath":null,"iconVariant":"dark"}"#,
         )
         .expect("known variant should parse");
-        assert_eq!(stored.icon_variant, SystemAppIconVariant::Cosmos);
+        assert_eq!(stored.icon_variant, SystemAppIconVariant::Dark);
         assert!(stored.icon_path.is_none());
     }
 
@@ -530,17 +517,45 @@ mod tests {
     #[test]
     fn deserialize_stored_icon_variant_accepts_kebab_case() {
         let mut deserializer =
-            serde_json::Deserializer::from_str(r#""sunset-dark""#);
+            serde_json::Deserializer::from_str(r#""ripple-dark""#);
         let variant = deserialize_stored_icon_variant(&mut deserializer)
-            .expect("sunset-dark should deserialize");
-        assert_eq!(variant, SystemAppIconVariant::SunsetDark);
+            .expect("ripple-dark should deserialize");
+        assert_eq!(variant, SystemAppIconVariant::RippleDark);
+    }
+
+    /// Sunset, Cosmos, Particle (+ dark twins) and Wave were removed; a stored
+    /// choice of one of them must fall back to the default, not fail setup.
+    #[test]
+    fn removed_icon_variants_fall_back_to_default() {
+        for raw in [
+            r#""sunset""#, r#""sunset-dark""#, r#""cosmos""#, r#""cosmos-dark""#,
+            r#""particle""#, r#""particle-dark""#, r#""wave""#,
+        ] {
+            let mut deserializer = serde_json::Deserializer::from_str(raw);
+            let variant = deserialize_stored_icon_variant(&mut deserializer)
+                .expect("removed variant should not fail setup");
+            assert_eq!(variant, SystemAppIconVariant::default(), "{raw}");
+        }
     }
 
     #[test]
-    fn deserialize_stored_icon_variant_accepts_wave() {
-        let mut deserializer = serde_json::Deserializer::from_str(r#""wave""#);
-        let variant = deserialize_stored_icon_variant(&mut deserializer)
-            .expect("wave should deserialize");
-        assert_eq!(variant, SystemAppIconVariant::Wave);
+    fn deserialize_stored_icon_variant_accepts_ripple_variants() {
+        for (raw, expected) in [
+            (r#""ripple""#, SystemAppIconVariant::Ripple),
+            (r#""ripple-dark""#, SystemAppIconVariant::RippleDark),
+        ] {
+            let mut deserializer = serde_json::Deserializer::from_str(raw);
+            let variant = deserialize_stored_icon_variant(&mut deserializer)
+                .expect("ripple variants should deserialize");
+            assert_eq!(variant, expected);
+        }
+    }
+
+    #[test]
+    fn stored_light_choice_survives_default_change() {
+        let stored: StoredAppIconState =
+            serde_json::from_str(r#"{"iconPath":null,"iconVariant":"light"}"#)
+                .expect("explicit light should parse");
+        assert_eq!(stored.icon_variant, SystemAppIconVariant::Light);
     }
 }
