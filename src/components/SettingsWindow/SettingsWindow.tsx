@@ -45,13 +45,8 @@ import OpacityOutlinedIcon from '@mui/icons-material/OpacityOutlined';
 import { StatefulButtonGroup, type ButtonState } from '@/components/common/StatefulButtonGroup';
 import defaultAppIconPreview from '@/assets/images/kiji-logo.png';
 import defaultDarkAppIconPreview from '@/assets/images/kiji-logo-dark.png';
-import sunsetAppIconPreview from '@/assets/images/kiji-logo-sunset.png';
-import sunsetDarkAppIconPreview from '@/assets/images/kiji-logo-sunset-dark.png';
-import cosmosAppIconPreview from '@/assets/images/kiji-logo-cosmos.png';
-import cosmosDarkAppIconPreview from '@/assets/images/kiji-logo-cosmos-dark.png';
-import particleAppIconPreview from '@/assets/images/kiji-logo-particle.png';
-import particleDarkAppIconPreview from '@/assets/images/kiji-logo-particle-dark.png';
-import waveAppIconPreview from '@/assets/images/kiji-logo-wave.png';
+import rippleAppIconPreview from '@/assets/images/kiji-logo-ripple.png';
+import rippleDarkAppIconPreview from '@/assets/images/kiji-logo-ripple-dark.png';
 import './SettingsWindow.css';
 
 type ConfigCategory = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'contact';
@@ -91,34 +86,25 @@ interface SystemAppIconState {
 type SystemAppIconVariant =
   | 'light'
   | 'dark'
-  | 'sunset'
-  | 'sunset-dark'
-  | 'cosmos'
-  | 'cosmos-dark'
-  | 'particle'
-  | 'particle-dark'
-  | 'wave';
-const DEFAULT_SYSTEM_APP_ICON_VARIANT: SystemAppIconVariant = 'light';
+  | 'ripple'
+  | 'ripple-dark';
+// Must match the Rust `SystemAppIconVariant::default()` and `bundle.icon` (icons-ripple).
+const DEFAULT_SYSTEM_APP_ICON_VARIANT: SystemAppIconVariant = 'ripple';
 
 const APP_ICON_VARIANT_OPTIONS: ReadonlyArray<{
   value: SystemAppIconVariant;
   label: string;
   source: string;
 }> = [
+  { value: 'ripple', label: 'Ripple', source: rippleAppIconPreview },
+  { value: 'ripple-dark', label: 'Ripple Dark', source: rippleDarkAppIconPreview },
   { value: 'light', label: 'Light', source: defaultAppIconPreview },
   { value: 'dark', label: 'Dark', source: defaultDarkAppIconPreview },
-  { value: 'sunset', label: 'Sunset', source: sunsetAppIconPreview },
-  { value: 'sunset-dark', label: 'Sunset Dark', source: sunsetDarkAppIconPreview },
-  { value: 'cosmos', label: 'Cosmos', source: cosmosAppIconPreview },
-  { value: 'cosmos-dark', label: 'Cosmos Dark', source: cosmosDarkAppIconPreview },
-  { value: 'particle', label: 'Particle', source: particleAppIconPreview },
-  { value: 'particle-dark', label: 'Particle Dark', source: particleDarkAppIconPreview },
-  { value: 'wave', label: 'Wave', source: waveAppIconPreview },
 ];
 
 const getDefaultAppIconPreview = (variant: SystemAppIconVariant): string => (
   APP_ICON_VARIANT_OPTIONS.find((option) => option.value === variant)?.source
-    ?? defaultAppIconPreview
+    ?? rippleAppIconPreview
 );
 
 const createSteppedSliderTransform = (
@@ -1202,7 +1188,7 @@ export const SettingsWindow: React.FC = () => {
                     <div className="settings-item-info">
                       <label className="settings-item-label">Default app icon</label>
                       <p className="settings-item-description">
-                        Choose the built-in app icon used when no custom icon is selected. Light is the default; picking one clears any custom icon.
+                        Choose the built-in app icon used when no custom icon is selected. Ripple is the default; picking one clears any custom icon.
                       </p>
                     </div>
                     <div className="settings-app-icon-variant-options" role="group" aria-label="Default app icon">
