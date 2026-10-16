@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## [1.5.0] - 2026-10-16
+
+### Changed
+
+- New app icon: **Ripple**, waves spreading from the corner. Settings → App icon offers Ripple, Ripple Dark, Light and Dark. If you had picked Sunset, Cosmos, Particle or Wave, the app now shows Ripple.
+
+### Fixed
+
+- Security update for a bundled TLS library (rustls).
+
 ## [1.4.0] - 2026-10-16
 
 ### Added
