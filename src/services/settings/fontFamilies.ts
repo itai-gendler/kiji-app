@@ -14,6 +14,9 @@ const CJK_FALLBACK =
 /** Common serif fallback – shared by Georgia and Charter */
 const SERIF_FALLBACK = "'Times New Roman', Times, serif";
 
+/** Serif fallback with Song/Mincho CJK faces so mixed-script text stays serif */
+const SERIF_CJK_FALLBACK = "'Songti SC', 'Hiragino Mincho ProN', 'Times New Roman', serif";
+
 function stack(primary: string, fallback: string = SANS_SERIF_FALLBACK): string {
   return primary ? `${primary}, ${fallback}` : fallback;
 }
@@ -62,6 +65,21 @@ export const FontStack = {
   ARTICLE_CONTENT_DEFAULT: stack("'Aktiv Grotesk'"),
   ARTICLE_NON_ASCII_DEFAULT: CJK_FALLBACK,
   ARTICLE_CONTENT_SERIF: stack("'Iowan Old Style', 'Charter', 'Georgia'", SERIF_FALLBACK),
+
+  // Reader theme stacks (readerThemes.ts). macOS system faces only, with a serif or sans CJK tail.
+  READER_NEW_YORK: stack("ui-serif, 'New York', 'Iowan Old Style', Georgia", SERIF_CJK_FALLBACK),
+  READER_IOWAN: stack("'Iowan Old Style', Georgia", SERIF_CJK_FALLBACK),
+  READER_PALATINO: stack("Palatino, 'Palatino Linotype', 'Book Antiqua'", SERIF_CJK_FALLBACK),
+  READER_BASKERVILLE: stack("Baskerville, 'Libre Baskerville'", SERIF_CJK_FALLBACK),
+  READER_GEORGIA: stack('Georgia', SERIF_CJK_FALLBACK),
+  READER_CHARTER: stack("Charter, 'Bitstream Charter', Georgia", SERIF_CJK_FALLBACK),
+  READER_AVENIR_NEXT: stack("'Avenir Next', 'Helvetica Neue'", CJK_FALLBACK),
+  READER_SERAVEK: stack("Seravek, 'Avenir Next'", CJK_FALLBACK),
+  READER_ATHELAS: stack("Athelas, 'Iowan Old Style', Georgia", SERIF_CJK_FALLBACK),
+  READER_MINCHO: stack("'Hiragino Mincho ProN', 'YuMincho', 'Songti SC', Georgia", SERIF_FALLBACK),
+  READER_HOEFLER: stack("'Hoefler Text', Baskerville, Georgia", SERIF_CJK_FALLBACK),
+  READER_BIG_CASLON: stack("'Big Caslon', 'Hoefler Text', Georgia", SERIF_CJK_FALLBACK),
+  READER_VERDANA: stack("Verdana, 'Avenir Next'", CJK_FALLBACK),
 } as const;
 
 export type FontStackValue = (typeof FontStack)[keyof typeof FontStack];

@@ -5,6 +5,7 @@
  */
 
 import { FontStack } from './fontFamilies';
+import { DEFAULT_READER_THEME } from './readerThemes';
 import type { BackgroundUpdateMode } from '../scheduler/types';
 import { DEFAULT_SMART_VIEW_DEFINITIONS, type SmartViewId } from '@/constants';
 import {
@@ -82,6 +83,8 @@ export interface UserSettings {
   sidebarSectionFold: SidebarSectionFoldSettings;
   smartViews: SmartViewSettings[];
   uiThemeVariant: UiThemeVariant;
+  /** Reader theme id (`default` = built-in palette); Light/Dark/Auto picks its light or dark version. */
+  readerTheme: string;
   /** Renderer-only pane fill. Absent = per-OS CSS defaults. Never persist a cross-OS literal. */
   surfaceFillOpacity?: number;
 }
@@ -128,4 +131,5 @@ export const DEFAULT_SETTINGS: UserSettings = {
     sortOrder: index,
   })),
   uiThemeVariant: 'modern',
+  readerTheme: DEFAULT_READER_THEME,
 };

@@ -69,6 +69,11 @@ export default defineMain({
       host: false,
       strictPort: false,
       hmr: undefined,
+      watch: {
+        ...config.server?.watch,
+        // Same as vite.config.ts: Rust build output (thousands of files) must not trigger page reloads.
+        ignored: ['**/src-tauri/**'],
+      },
     };
 
     return config;

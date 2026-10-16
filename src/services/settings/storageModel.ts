@@ -42,6 +42,7 @@ export interface RendererPreferences {
   sidebarSectionFold: SidebarSectionFoldSettings;
   smartViews: SmartViewSettings[];
   uiThemeVariant: UiThemeVariant;
+  readerTheme: string;
   surfaceFillOpacity?: number;
   windowPosition?: Pick<WindowSize, 'x' | 'y'>;
 }
@@ -80,6 +81,7 @@ export function toRendererPreferences(settings: UserSettings): RendererPreferenc
     sidebarSectionFold: settings.sidebarSectionFold,
     smartViews: settings.smartViews,
     uiThemeVariant: settings.uiThemeVariant,
+    readerTheme: settings.readerTheme,
     ...(settings.surfaceFillOpacity !== undefined
       ? { surfaceFillOpacity: settings.surfaceFillOpacity }
       : {}),
@@ -117,6 +119,7 @@ export function mergeUserSettings(
     sidebarSectionFold: renderer.sidebarSectionFold,
     smartViews: renderer.smartViews,
     uiThemeVariant: renderer.uiThemeVariant,
+    readerTheme: renderer.readerTheme,
     ...(renderer.surfaceFillOpacity !== undefined
       ? { surfaceFillOpacity: renderer.surfaceFillOpacity }
       : {}),

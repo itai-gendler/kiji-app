@@ -13,6 +13,13 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { logger } from "./services/logger";
 import { applyFontFamiliesToRoot, applyReadingLayoutToRoot, applySurfaceFillOpacityToRoot } from "./services/settings/styleVariables";
 import { SETTINGS_STORAGE_KEYS } from "./services/settings/storageModel";
+import { DEFAULT_SETTINGS } from "./services/settings/types";
+import {
+  normalizeReaderTheme,
+  resolveActiveReaderTheme,
+  resolveThemedFontFamilies,
+  resolveThemedReadingLayout,
+} from "./services/settings/readerThemes";
 import { keybindingService } from "./services/shortcuts/shortcutService";
 import { savedArticlesSyncBridge } from "./services/saved/sync/savedArticlesSyncBridge";
 import { initializeAppSettings } from "./services/settings/nativeSettingsSync";
@@ -32,6 +39,7 @@ import "./styles/framework/index.css";
 import "./styles/base.css";
 import "./styles/view.css";
 import "./styles/ui-theme-classic.css";
+import "./styles/reader-themes.css";
 
 function initializeVisualSettings(): void {
   try {
@@ -46,13 +54,29 @@ function initializeVisualSettings(): void {
       fontFamilies?: Parameters<typeof applyFontFamiliesToRoot>[0];
       readingLayout?: Parameters<typeof applyReadingLayoutToRoot>[0];
       surfaceFillOpacity?: number;
+      readerTheme?: unknown;
+      readerThemes?: unknown;
     };
 
-    if (settings.fontFamilies) {
-      applyFontFamiliesToRoot(settings.fontFamilies);
+    // Same theme resolution as ThemeProvider, so its later apply changes nothing
+    // (no font swap or article re-layout once React mounts).
+    const windowType = getRendererWindowType();
+    const readerTheme = windowType === "main" || windowType === "article"
+      ? resolveActiveReaderTheme(normalizeReaderTheme(settings.readerTheme, settings.readerThemes))
+      : undefined;
+
+    if (settings.fontFamilies || readerTheme) {
+      applyFontFamiliesToRoot(resolveThemedFontFamilies(
+        { ...DEFAULT_SETTINGS.fontFamilies, ...settings.fontFamilies },
+        readerTheme,
+      ));
     }
-    if (settings.readingLayout) {
-      applyReadingLayoutToRoot(settings.readingLayout);
+    if (settings.readingLayout || readerTheme) {
+      applyReadingLayoutToRoot(resolveThemedReadingLayout(
+        { ...DEFAULT_SETTINGS.readingLayout, ...settings.readingLayout },
+        readerTheme,
+        DEFAULT_SETTINGS.readingLayout,
+      ));
     }
     applySurfaceFillOpacityToRoot(settings.surfaceFillOpacity);
   } catch (error) {

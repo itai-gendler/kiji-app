@@ -1,0 +1,369 @@
+/* Reader theme presets — book-reader palettes.
+   Loaded after theme.css, framework/index.css, and ui-theme-classic.css.
+
+   Every theme has a light and a dark version. Each version only defines a
+   handful of `--rt-*` color tokens on
+   `[data-reader-theme="<id>"][data-reader-scheme="light|dark"]`, so the same
+   tokens also work on any element (e.g. Storybook gallery cards). The shared blocks below derive every app
+   token the main window and article views read from those bases.
+
+   Fonts, reading weight, and line height are NOT here: ThemeProvider sets
+   those inline on the root (which outranks stylesheets), so they are resolved
+   from `src/services/settings/readerThemes.ts`.
+
+   ThemeProvider sets `data-reader-theme` (the chosen theme) and
+   `data-reader-scheme` (the effective Light/Dark scheme) on the main and
+   article windows only, and only when the theme is not "default".
+   Presets keep the built-in transparency model: each surface is the preset tint
+   at the same alpha the default palette uses (Surface opacity for the sidebar,
+   the reader alpha for the article view, the per-OS list alpha in Modern), so
+   the native window glass still shows through. Classic keeps the list and
+   article view solid, exactly like the built-in Classic surfaces.
+
+   Invariants (checked by test/styles/readerThemesContrast.test.ts):
+   ink on page >= 7:1, ink-soft and accent on page >= 4.5:1,
+   on-accent on accent >= 4.5:1. */
+
+[data-reader-theme="paper"][data-reader-scheme="light"] {
+  --rt-page: #FBF8F1;
+  --rt-ink: #2B2620;
+  --rt-ink-soft: #6B6257;
+  --rt-accent: #B4532A;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="paper"][data-reader-scheme="dark"] {
+  --rt-page: #1F1D1A;
+  --rt-ink: #E6DFD3;
+  --rt-ink-soft: #A69E91;
+  --rt-accent: #E08A5E;
+  --rt-on-accent: #1F1D1A;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="sepia"][data-reader-scheme="light"] {
+  --rt-page: #F4ECD8;
+  --rt-ink: #4E3B2C;
+  --rt-ink-soft: #77624F;
+  --rt-accent: #9C5B2E;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 12%;
+}
+
+[data-reader-theme="sepia"][data-reader-scheme="dark"] {
+  --rt-page: #2A2118;
+  --rt-ink: #E8D9BF;
+  --rt-ink-soft: #B19F85;
+  --rt-accent: #D9955E;
+  --rt-on-accent: #2A2118;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="calm"][data-reader-scheme="light"] {
+  --rt-page: #EEE5D3;
+  --rt-ink: #3A3127;
+  --rt-ink-soft: #6A5E4D;
+  --rt-accent: #8A5520;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 12%;
+}
+
+[data-reader-theme="calm"][data-reader-scheme="dark"] {
+  --rt-page: #1E1B18;
+  --rt-ink: #D8CCB6;
+  --rt-ink-soft: #A09380;
+  --rt-accent: #D4A55A;
+  --rt-on-accent: #1E1B18;
+  --rt-shadow-strength: 50%;
+}
+
+[data-reader-theme="eye-care"][data-reader-scheme="light"] {
+  --rt-page: #CCE8CF;
+  --rt-ink: #1F3326;
+  --rt-ink-soft: #45614D;
+  --rt-accent: #246B42;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="eye-care"][data-reader-scheme="dark"] {
+  --rt-page: #14241A;
+  --rt-ink: #CFE6D3;
+  --rt-ink-soft: #8FB09A;
+  --rt-accent: #6CC492;
+  --rt-on-accent: #14241A;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="washi"][data-reader-scheme="light"] {
+  --rt-page: #F4EFE3;
+  --rt-ink: #24242A;
+  --rt-ink-soft: #5C584F;
+  --rt-accent: #B0352A;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="washi"][data-reader-scheme="dark"] {
+  --rt-page: #1C1C21;
+  --rt-ink: #E9E4D8;
+  --rt-ink-soft: #A8A397;
+  --rt-accent: #E9705F;
+  --rt-on-accent: #1C1C21;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="parchment"][data-reader-scheme="light"] {
+  --rt-page: #F1E4C3;
+  --rt-ink: #3B2A1A;
+  --rt-ink-soft: #6B5639;
+  --rt-accent: #7A3B1E;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 14%;
+}
+
+[data-reader-theme="parchment"][data-reader-scheme="dark"] {
+  --rt-page: #261C12;
+  --rt-ink: #ECDDB9;
+  --rt-ink-soft: #B3A07C;
+  --rt-accent: #D98A62;
+  --rt-on-accent: #261C12;
+  --rt-shadow-strength: 50%;
+}
+
+[data-reader-theme="newsprint"][data-reader-scheme="light"] {
+  --rt-page: #EFEDE7;
+  --rt-ink: #161616;
+  --rt-ink-soft: #55534E;
+  --rt-accent: #B3261E;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="newsprint"][data-reader-scheme="dark"] {
+  --rt-page: #161616;
+  --rt-ink: #E6E4DE;
+  --rt-ink-soft: #A3A09A;
+  --rt-accent: #F0645A;
+  --rt-on-accent: #161616;
+  --rt-shadow-strength: 50%;
+}
+
+[data-reader-theme="e-ink"][data-reader-scheme="light"] {
+  --rt-page: #E7E6E1;
+  --rt-ink: #1B1B1B;
+  --rt-ink-soft: #494946;
+  --rt-accent: #2F4F5F;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 8%;
+}
+
+[data-reader-theme="e-ink"][data-reader-scheme="dark"] {
+  --rt-page: #232323;
+  --rt-ink: #DCDBD6;
+  --rt-ink-soft: #9E9D98;
+  --rt-accent: #8FB3C4;
+  --rt-on-accent: #232323;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="solarized"][data-reader-scheme="light"] {
+  --rt-page: #FDF6E3;
+  --rt-ink: #073642;
+  --rt-ink-soft: #586E75;
+  --rt-accent: #1A6BA8;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="solarized"][data-reader-scheme="dark"] {
+  --rt-page: #002B36;
+  --rt-ink: #EEE8D5;
+  --rt-ink-soft: #93A1A1;
+  --rt-accent: #3CB4A8;
+  --rt-on-accent: #002B36;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="quiet"][data-reader-scheme="light"] {
+  --rt-page: #E8E8EA;
+  --rt-ink: #2E2E31;
+  --rt-ink-soft: #5F5F66;
+  --rt-accent: #4F5B6E;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="quiet"][data-reader-scheme="dark"] {
+  --rt-page: #2C2C2E;
+  --rt-ink: #BDBDC2;
+  --rt-ink-soft: #98989D;
+  --rt-accent: #A0A7B4;
+  --rt-on-accent: #2C2C2E;
+  --rt-shadow-strength: 40%;
+}
+
+[data-reader-theme="midnight"][data-reader-scheme="light"] {
+  --rt-page: #EEF2F8;
+  --rt-ink: #1A2233;
+  --rt-ink-soft: #4E5A70;
+  --rt-accent: #2F5BC4;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="midnight"][data-reader-scheme="dark"] {
+  --rt-page: #131A2A;
+  --rt-ink: #CBD3E3;
+  --rt-ink-soft: #8792A8;
+  --rt-accent: #7AA2F7;
+  --rt-on-accent: #131A2A;
+  --rt-shadow-strength: 45%;
+}
+
+[data-reader-theme="oled-night"][data-reader-scheme="light"] {
+  --rt-page: #FFF9F0;
+  --rt-ink: #2B231A;
+  --rt-ink-soft: #6B5E4E;
+  --rt-accent: #9A5B12;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 10%;
+}
+
+[data-reader-theme="oled-night"][data-reader-scheme="dark"] {
+  --rt-page: #000000;
+  --rt-ink: #B0ABA4;
+  --rt-ink-soft: #7A756F;
+  --rt-accent: #E0A458;
+  --rt-on-accent: #000000;
+  --rt-shadow-strength: 60%;
+}
+
+[data-reader-theme="high-contrast"][data-reader-scheme="light"] {
+  --rt-page: #FFFFFF;
+  --rt-ink: #000000;
+  --rt-ink-soft: #333333;
+  --rt-accent: #0037C1;
+  --rt-on-accent: #FFFFFF;
+  --rt-shadow-strength: 14%;
+}
+
+[data-reader-theme="high-contrast"][data-reader-scheme="dark"] {
+  --rt-page: #000000;
+  --rt-ink: #FFFFFF;
+  --rt-ink-soft: #D6D6D6;
+  --rt-accent: #FFD60A;
+  --rt-on-accent: #000000;
+  --rt-shadow-strength: 60%;
+}
+
+/* Derived app tokens. The extra attribute selectors lift specificity to
+   (0,5,0) so this wins over the OS, Classic, and framework-bridge overrides
+   in theme.css, ui-theme-classic.css, and theme-bridge.css (at most (0,3,1)). */
+:root[data-reader-theme][data-theme][data-ui-theme][data-os] {
+  /* useSystemAccentColor() sets the macOS accent INLINE on the root in the main
+     and article windows; only !important outranks it. Many component sheets
+     read --system-accent-color directly, so the preset accent must win here. */
+  --system-accent-color: var(--rt-accent) !important;
+
+  /* Surface tints, then the built-in alpha for each surface (see header). */
+  --rt-sidebar-tint: color-mix(in srgb, var(--rt-page) 94%, var(--rt-ink));
+  --rt-list-tint: color-mix(in srgb, var(--rt-page) 97%, var(--rt-ink));
+  --theme-sidebar-bg: color-mix(in srgb, var(--rt-sidebar-tint) calc(var(--app-surface-fill-alpha) * 100%), transparent);
+  --theme-article-bg: color-mix(in srgb, var(--rt-list-tint) calc(var(--rt-list-fill-alpha) * 100%), transparent);
+  --theme-article-view-bg: color-mix(in srgb, var(--rt-page) calc(var(--app-reader-fill-alpha) * 100%), transparent);
+  --theme-article-view-solid-bg: var(--rt-page);
+
+  --theme-primary-color: var(--rt-ink);
+  --theme-article-content-color: var(--rt-ink);
+  --theme-text-primary: var(--rt-ink);
+  --theme-text-secondary: var(--rt-ink-soft);
+  --theme-text-tertiary: color-mix(in srgb, var(--rt-ink-soft) 75%, var(--rt-page));
+  --theme-text-muted: color-mix(in srgb, var(--rt-ink-soft) 50%, var(--rt-page));
+  --theme-text-subdued: var(--theme-text-tertiary);
+  --theme-timestamp-color: var(--theme-text-tertiary);
+  --theme-accent-color: var(--rt-accent);
+
+  --theme-border: color-mix(in srgb, var(--rt-ink) 11%, transparent);
+  --theme-border-light: color-mix(in srgb, var(--rt-ink) 6%, transparent);
+  --theme-hover-overlay: color-mix(in srgb, var(--rt-ink) 6%, transparent);
+  --theme-hover-overlay-dark: color-mix(in srgb, var(--rt-ink) 10%, transparent);
+  --widget-button-hover-bg: color-mix(in srgb, var(--rt-ink) 9%, transparent);
+  --scrollbar-thumb-color: color-mix(in srgb, var(--rt-ink) 22%, transparent);
+  --scrollbar-thumb-hover-color: color-mix(in srgb, var(--rt-ink) 34%, transparent);
+  --theme-primary-hover: color-mix(in srgb, var(--rt-accent) 85%, var(--rt-ink));
+  --theme-primary-light: color-mix(in srgb, var(--rt-accent) 14%, var(--rt-page));
+  --theme-shadow: color-mix(in srgb, #000 var(--rt-shadow-strength), transparent);
+
+  --article-content-code-bg-inline: color-mix(in srgb, var(--rt-ink) 8%, transparent);
+
+  /* Framework surfaces (menus, popovers, inputs, modals) from theme-bridge.css. */
+  --color-primary-content: var(--rt-on-accent);
+  --color-base-100: color-mix(in srgb, var(--rt-page) 96%, var(--rt-ink));
+  --framework-input-bg: color-mix(in srgb, var(--rt-page) 92%, var(--rt-ink));
+  --framework-input-border: color-mix(in srgb, var(--rt-ink) 18%, transparent);
+  --framework-input-placeholder: var(--theme-text-tertiary);
+  --framework-modal-surface: color-mix(in srgb, var(--rt-page) 97%, var(--rt-ink));
+  --framework-modal-border: color-mix(in srgb, var(--rt-ink) 10%, transparent);
+}
+
+/* Article-list alpha mirrors the literals in theme.css (Modern glass). */
+:root[data-reader-theme] {
+  --rt-list-fill-alpha: 0.55;
+}
+
+:root[data-reader-theme][data-theme="dark"] {
+  --rt-list-fill-alpha: 0.45;
+}
+
+:root[data-reader-theme][data-os="windows"],
+:root[data-reader-theme][data-os="linux"],
+:root[data-reader-theme][data-os="other"] {
+  --rt-list-fill-alpha: 0.88;
+}
+
+:root[data-reader-theme][data-theme="dark"][data-os="windows"],
+:root[data-reader-theme][data-theme="dark"][data-os="linux"],
+:root[data-reader-theme][data-theme="dark"][data-os="other"] {
+  --rt-list-fill-alpha: 0.90;
+}
+
+/* Classic: solid list and article view, like ui-theme-classic.css. Same
+   (0,5,0) specificity as the derived block above, so source order wins. */
+:root[data-reader-theme][data-theme][data-ui-theme="classic"][data-os] {
+  --theme-article-bg: var(--rt-list-tint);
+  --theme-article-view-bg: var(--rt-page);
+}
+
+/* Component colors that are literals in their own stylesheets. */
+:root[data-reader-theme] .article-list-subtitle {
+  color: var(--rt-ink-soft);
+}
+
+:root[data-reader-theme] .article-list-items {
+  --article-list-skeleton-bg: color-mix(in srgb, var(--rt-ink) 10%, transparent);
+  --article-list-skeleton-shimmer-mid: color-mix(in srgb, var(--rt-page) 60%, transparent);
+}
+
+/* Windows/Linux in-app menu bar: keep its near-opaque fill, in the theme tint. */
+:root[data-reader-theme] .app-menu-bar {
+  background-color: color-mix(in srgb, var(--rt-sidebar-tint) 96%, transparent);
+}
+
+/* Dropdown menus keep their built-in translucency (0.5 light / 0.8 dark). */
+:root[data-reader-theme] .dropdown-menu {
+  background-color: color-mix(in srgb, var(--rt-page) 50%, transparent);
+}
+
+:root[data-reader-theme][data-theme="dark"] .dropdown-menu {
+  background-color: color-mix(in srgb, var(--rt-page) 80%, transparent);
+}
+
+:root[data-reader-theme] .tag-edit-suggestion-btn {
+  border-color: var(--theme-border);
+}
+
+:root[data-reader-theme] .tag-edit-suggestion-btn:hover:not(:disabled) {
+  background-color: var(--theme-hover-overlay-dark);
+}
