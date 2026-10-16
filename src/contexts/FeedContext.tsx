@@ -83,6 +83,15 @@ const DEFAULT_ARTICLE_LIST_SORT: NonNullable<ArticleQuery['sort']> = { field: 'p
 const READ_ARTICLE_LIST_SORT: NonNullable<ArticleQuery['sort']> = { field: 'lastReadAt', order: 'desc' };
 const LAST_SIDEBAR_SELECTION_KEY = 'last-sidebar-selection';
 const HAS_PERFORMANCE_API = typeof performance !== 'undefined' && typeof performance.mark === 'function';
+
+/** Diagnostics only: a missing start mark (cleared timeline, path entered without a start) must not throw. */
+function measureSelection(name: string, startMark: string, endMark: string): void {
+  try {
+    performance.measure(name, startMark, endMark);
+  } catch {
+    // Mark not set; skip this measurement.
+  }
+}
 export type ArticleViewOverlayPhase = 'closed' | 'opening' | 'open' | 'closing';
 export type ArticleListSearchStatus = 'idle' | 'pending' | 'ready' | 'error';
 export type ArticleListUpdatePayload = Partial<Pick<Article, 'read' | 'saved' | 'savedArticleId' | 'starred' | 'lastReadAt'>>;
@@ -3318,7 +3327,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       if (perfMark && HAS_PERFORMANCE_API) {
         performance.mark(`${perfMark}:fresh-ready`);
-        performance.measure(`${perfMark}:total-selection`, `${perfMark}:start`, `${perfMark}:fresh-ready`);
+        measureSelection(`${perfMark}:total-selection`, `${perfMark}:start`, `${perfMark}:fresh-ready`);
       }
 
       requeueActiveSearchForSource({ type: 'feed', key: sourceKey, feedId });
@@ -3458,7 +3467,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       if (perfMark && HAS_PERFORMANCE_API) {
         performance.mark(`${perfMark}:fresh-ready`);
-        performance.measure(`${perfMark}:total-selection`, `${perfMark}:start`, `${perfMark}:fresh-ready`);
+        measureSelection(`${perfMark}:total-selection`, `${perfMark}:start`, `${perfMark}:fresh-ready`);
       }
 
       if (!isSelectionActive(token)) {
@@ -3654,7 +3663,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         if (HAS_PERFORMANCE_API) {
           performance.mark(`${perfMark}:cached-ready`);
-          performance.measure(`${perfMark}:to-cached`, `${perfMark}:start`, `${perfMark}:cached-ready`);
+          measureSelection(`${perfMark}:to-cached`, `${perfMark}:start`, `${perfMark}:cached-ready`);
         }
       }
 
