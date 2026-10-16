@@ -1,10 +1,23 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
-import { settingsManager, DEFAULT_SETTINGS } from '@/services/settings';
+import {
+  settingsManager,
+  DEFAULT_SETTINGS,
+  resolveActiveReaderTheme,
+  resolveThemedFontFamilies,
+  resolveThemedReadingLayout,
+} from '@/services/settings';
 import type { Theme, UiThemeVariant, FontFamilySettings, ReadingLayoutSettings } from '@/services/settings';
 import { applyFontFamiliesToRoot, applyReadingLayoutToRoot, applySurfaceFillOpacityToRoot } from '@/services/settings/styleVariables';
 import { isSurfaceFillDragging } from '@/services/settings/surfaceFillOpacity';
 import { loadFontsFromFamilyString } from '@/utils/googleFonts';
 import { tauriClient } from '@/lib/tauriClient';
+import { getRendererWindowType } from '@/utils/rendererWindow';
+
+/** Reader themes restyle reading surfaces only; Settings and Update windows keep the built-in palette. */
+const appliesReaderThemeToWindow = (): boolean => {
+  const windowType = getRendererWindowType();
+  return windowType === 'main' || windowType === 'article';
+};
 
 interface ThemeContextType {
   theme: Theme;
@@ -35,6 +48,13 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     DEFAULT_SETTINGS.readingLayout
   );
   const [uiThemeVariant, setUiThemeVariant] = useState<UiThemeVariant>(DEFAULT_SETTINGS.uiThemeVariant);
+  const [readerTheme, setReaderTheme] = useState<string>(DEFAULT_SETTINGS.readerTheme);
+  const [appliesReaderTheme] = useState(appliesReaderThemeToWindow);
+  // One theme for both schemes; reader-themes.css picks its light or dark version.
+  // Presets are module constants, so this reference is stable across renders.
+  const activeReaderTheme = appliesReaderTheme
+    ? resolveActiveReaderTheme(readerTheme)
+    : undefined;
   const skipInitialThemePersistRef = useRef(true);
 
   const getSystemTheme = (): 'light' | 'dark' => (
@@ -60,6 +80,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         setFontFamilies(settings.fontFamilies);
         setReadingLayout(settings.readingLayout);
         setUiThemeVariant(settings.uiThemeVariant);
+        setReaderTheme(settings.readerTheme);
         applySurfaceFillOpacityToRoot(settings.surfaceFillOpacity);
       } catch (error) {
         console.error('Error loading settings:', error);
@@ -102,38 +123,63 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     document.documentElement.setAttribute('data-ui-theme', uiThemeVariant);
   }, [uiThemeVariant, isInitialized]);
 
+  // Apply the reader theme palette (reader-themes.css keys every token off this attribute).
+  const activeReaderThemeId = activeReaderTheme?.id;
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    if (activeReaderThemeId) {
+      document.documentElement.setAttribute('data-reader-theme', activeReaderThemeId);
+      document.documentElement.setAttribute('data-reader-scheme', effectiveTheme);
+    } else {
+      document.documentElement.removeAttribute('data-reader-theme');
+      document.documentElement.removeAttribute('data-reader-scheme');
+    }
+  }, [activeReaderThemeId, effectiveTheme, isInitialized]);
+
   // Apply font families to CSS variables (load Google Fonts first)
   useEffect(() => {
     if (!isInitialized) return;
 
+    // A reader theme supplies article fonts only where the user kept the default.
+    const effectiveFonts = resolveThemedFontFamilies(fontFamilies, activeReaderTheme);
+    // Google Font loads settle in network order, so a superseded run (e.g. the
+    // light preset after a quick switch to dark) must not write its fonts last.
+    let superseded = false;
     const applyFonts = async () => {
       try {
         // Load Google Fonts if needed
         await Promise.all([
-          loadFontsFromFamilyString(fontFamilies.uiFont),
-          loadFontsFromFamilyString(fontFamilies.articleTitleFont),
-          loadFontsFromFamilyString(fontFamilies.articleContentFont),
-          loadFontsFromFamilyString(fontFamilies.articleNonAsciiFont),
+          loadFontsFromFamilyString(effectiveFonts.uiFont),
+          loadFontsFromFamilyString(effectiveFonts.articleTitleFont),
+          loadFontsFromFamilyString(effectiveFonts.articleContentFont),
+          loadFontsFromFamilyString(effectiveFonts.articleNonAsciiFont),
         ]);
-
-        // Apply fonts after loading so the renderer uses the requested stacks immediately.
-        applyFontFamiliesToRoot(fontFamilies);
       } catch (error) {
         console.error('Error loading fonts:', error);
-        // Still apply fonts even if loading fails so the fallback stacks take effect.
-        applyFontFamiliesToRoot(fontFamilies);
+        // Still apply fonts below even if loading fails so the fallback stacks take effect.
+      }
+
+      // Apply fonts after loading so the renderer uses the requested stacks immediately.
+      if (!superseded) {
+        applyFontFamiliesToRoot(effectiveFonts);
       }
     };
 
     applyFonts();
-  }, [fontFamilies, isInitialized]);
+    return () => {
+      superseded = true;
+    };
+  }, [fontFamilies, activeReaderTheme, isInitialized]);
 
   // Apply reading layout variables once settings are loaded so every article
   // surface shares the same typography and width rules.
   useEffect(() => {
     if (!isInitialized) return;
-    applyReadingLayoutToRoot(readingLayout);
-  }, [readingLayout, isInitialized]);
+    applyReadingLayoutToRoot(
+      resolveThemedReadingLayout(readingLayout, activeReaderTheme, DEFAULT_SETTINGS.readingLayout),
+    );
+  }, [readingLayout, activeReaderTheme, isInitialized]);
 
   const updateFontFamilies = async (fonts: Partial<FontFamilySettings>) => {
     try {
@@ -210,6 +256,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         setFontFamilies(settings.fontFamilies);
         setReadingLayout(settings.readingLayout);
         setUiThemeVariant(settings.uiThemeVariant);
+        setReaderTheme(settings.readerTheme);
         if (!isSurfaceFillDragging()) {
           applySurfaceFillOpacityToRoot(settings.surfaceFillOpacity);
         }

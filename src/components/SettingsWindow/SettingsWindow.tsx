@@ -14,6 +14,11 @@ import {
 import type { ContentParser, UiThemeVariant } from '@/services/settings';
 import type { BackgroundUpdateMode } from '@/services/scheduler/types';
 import { CJK_FONT_OPTIONS, COMMON_FONT_OPTIONS } from '@/services/settings/fontFamilies';
+import {
+  DEFAULT_READER_THEME,
+  READER_THEMES,
+  normalizeReaderTheme,
+} from '@/services/settings/readerThemes';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useSystemAccentColor } from '@/hooks/useSystemAccentColor';
 import { SHORTCUT_LABELS, isCloseOnEscapeShortcut, keybindingService } from '@/services/shortcuts/shortcutService';
@@ -135,6 +140,7 @@ export const SettingsWindow: React.FC = () => {
   );
   const [contentParser, setContentParser] = useState<ContentParser>(DEFAULT_SETTINGS.contentParser);
   const [uiThemeVariant, setUiThemeVariant] = useState<UiThemeVariant>(DEFAULT_SETTINGS.uiThemeVariant);
+  const [readerTheme, setReaderTheme] = useState<string>(DEFAULT_READER_THEME);
   const chromeDefaultFillOpacity = defaultSurfaceFillOpacityForOs(
     typeof document === 'undefined' ? 'macos' : document.documentElement.getAttribute('data-os'),
   );
@@ -191,6 +197,7 @@ export const SettingsWindow: React.FC = () => {
         setBackgroundUpdate(settings.backgroundUpdate ?? DEFAULT_SETTINGS.backgroundUpdate);
         setContentParser(settings.contentParser ?? DEFAULT_SETTINGS.contentParser);
         setUiThemeVariant(settings.uiThemeVariant ?? DEFAULT_SETTINGS.uiThemeVariant);
+        setReaderTheme(normalizeReaderTheme(settings.readerTheme));
         const storedFill = clampSurfaceFillOpacity(settings.surfaceFillOpacity);
         const nextFill = storedFill ?? defaultSurfaceFillOpacityForOs(
           document.documentElement.getAttribute('data-os'),
@@ -647,6 +654,21 @@ export const SettingsWindow: React.FC = () => {
     }
   };
 
+  const handleReaderThemeChange = async (themeId: string) => {
+    const previousReaderTheme = readerTheme;
+    const nextReaderTheme = normalizeReaderTheme(themeId);
+    try {
+      // Settings keeps the built-in palette; the main and article windows
+      // re-apply through ThemeContext on the settings-changed broadcast.
+      setReaderTheme(nextReaderTheme);
+      await settingsManager.setReaderTheme(nextReaderTheme);
+      notifySettingsChanged();
+    } catch (error) {
+      console.error('Error saving reader theme:', error);
+      setReaderTheme(previousReaderTheme);
+    }
+  };
+
   const handleFontChange = async (
     fontType: 'uiFont' | 'articleTitleFont' | 'articleContentFont' | 'articleNonAsciiFont',
     value: string
@@ -1091,6 +1113,29 @@ export const SettingsWindow: React.FC = () => {
                         {UI_THEME_VARIANT_OPTIONS.map((option) => (
                           <option key={option.value} value={option.value}>
                             {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="settings-item">
+                    <div className="settings-item-info">
+                      <label className="settings-item-label" htmlFor="reader-theme">Reader theme</label>
+                      <p className="settings-item-description">
+                        Book-style colors and fonts for reading.
+                      </p>
+                    </div>
+                    <div className="settings-item-control">
+                      <select
+                        id="reader-theme"
+                        className="settings-select"
+                        value={readerTheme}
+                        onChange={(e) => void handleReaderThemeChange(e.target.value)}
+                      >
+                        <option value={DEFAULT_READER_THEME}>KiJi (default)</option>
+                        {READER_THEMES.map((theme) => (
+                          <option key={theme.id} value={theme.id} title={theme.inspiration}>
+                            {theme.label}
                           </option>
                         ))}
                       </select>

@@ -1,0 +1,113 @@
+.reader-theme-gallery {
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+  display: grid;
+  /* One row per theme: light version left, dark version right. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-content: start;
+  box-sizing: border-box;
+}
+
+.reader-theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px 24px 18px;
+  border-radius: 14px;
+  background: var(--rt-page);
+  color: var(--rt-ink);
+  font-family: var(--rt-font-body);
+  font-size: 16px;
+  border: 1px solid color-mix(in srgb, var(--rt-ink) 12%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, #000 var(--rt-shadow-strength), transparent);
+}
+
+.reader-theme-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-family-ui);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.reader-theme-card__label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.reader-theme-card__scheme,
+.reader-theme-card__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--rt-ink-soft);
+  background: color-mix(in srgb, var(--rt-ink) 8%, transparent);
+}
+
+.reader-theme-card__badge {
+  margin-left: auto;
+  color: var(--rt-accent);
+  background: color-mix(in srgb, var(--rt-accent) 14%, transparent);
+}
+
+.reader-theme-card__title {
+  margin: 6px 0 0;
+  font-family: var(--rt-font-title);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.reader-theme-card__byline {
+  margin: 0;
+  font-size: 13px;
+  color: var(--rt-ink-soft);
+}
+
+.reader-theme-card__body {
+  margin: 0;
+}
+
+.reader-theme-card__body a {
+  color: var(--rt-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.reader-theme-card__swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--rt-ink-soft);
+}
+
+.reader-theme-card__swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reader-theme-card__swatch > span {
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--rt-ink) 18%, transparent);
+}
+
+.reader-theme-card__footer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--rt-ink) 10%, transparent);
+  font-family: var(--font-family-ui);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--rt-ink-soft);
+}

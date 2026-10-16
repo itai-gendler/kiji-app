@@ -22,6 +22,17 @@
 
 ![KiJi reader mode](screenshots/preview-reader-mode.png)
 
+## Theme development
+
+Run `npm run storybook` to open isolated theme-debugging stories for the
+Sidebar, article list, and article view. The Storybook toolbar switches the
+light/dark color theme, Modern/Classic surface style, and platform CSS.
+
+Use `npm run build:storybook` to verify the static Storybook bundle.
+Storybook uses deterministic browser-only fixtures: it does not connect to
+KiJi's database, scheduler, filesystem, network services, or Tauri APIs, and it
+cannot reproduce native macOS vibrancy or WKWebView compositing.
+
 
 ## Privacy
 

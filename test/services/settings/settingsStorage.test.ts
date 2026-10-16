@@ -252,6 +252,29 @@ describe("settingsManager storage boundaries", () => {
     expect(await settingsManager.getSurfaceFillOpacity()).toBeUndefined();
   });
 
+  it("carries a pre-pairing { light, dark } reader theme over and rewrites it as one theme", async () => {
+    vi.doMock("@/lib/tauriClient", () => ({
+      tauriClient: {
+        settings: {
+          get: vi.fn().mockResolvedValue(DEFAULT_NATIVE_SETTINGS),
+          update: vi.fn().mockResolvedValue(DEFAULT_NATIVE_SETTINGS),
+        },
+      },
+    }));
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEYS.renderer,
+      JSON.stringify({ uiThemeVariant: "modern", readerThemes: { light: "sepia", dark: "quiet" } }),
+    );
+
+    const { settingsManager } = await import("@/services/settings/settingsManager");
+    expect(await settingsManager.getReaderTheme()).toBe("sepia");
+
+    await settingsManager.setReaderTheme("solarized");
+    const stored = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEYS.renderer) as string);
+    expect(stored.readerTheme).toBe("solarized");
+    expect(stored.readerThemes).toBeUndefined();
+  });
+
   it("clamps surface fill opacity and keeps it out of native settings", async () => {
     const updateMock = vi.fn().mockResolvedValue(DEFAULT_NATIVE_SETTINGS);
     vi.doMock("@/lib/tauriClient", () => ({

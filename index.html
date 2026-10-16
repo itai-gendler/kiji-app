@@ -64,6 +64,30 @@
           console.error("Error reading startup UI theme variant:", error);
         }
         root.setAttribute("data-ui-theme", uiThemeVariant);
+
+        // Reader theme before first paint (main and article windows only), so a
+        // themed user never sees the built-in palette flash first. Ids must match
+        // READER_THEMES in src/services/settings/readerThemes.ts (checked by
+        // test/styles/readerThemesContrast.test.ts); ThemeProvider re-applies it.
+        const READER_THEME_IDS = ["paper", "sepia", "calm", "eye-care", "washi", "parchment", "newsprint", "e-ink", "solarized", "quiet", "midnight", "oled-night", "high-contrast"];
+        try {
+          const windowType = new URLSearchParams(window.location.search).get("window");
+          const uiSettingsJson = windowType === "settings" || windowType === "update"
+            ? null
+            : localStorage.getItem("user-settings-ui");
+          const uiSettings = uiSettingsJson ? JSON.parse(uiSettingsJson) : null;
+          let readerTheme = uiSettings && uiSettings.readerTheme;
+          const legacy = uiSettings && uiSettings.readerThemes;
+          if (typeof readerTheme !== "string" && legacy && typeof legacy === "object") {
+            readerTheme = [legacy.light, legacy.dark].find((id) => READER_THEME_IDS.includes(id));
+          }
+          if (READER_THEME_IDS.includes(readerTheme)) {
+            root.setAttribute("data-reader-theme", readerTheme);
+            root.setAttribute("data-reader-scheme", resolvedTheme);
+          }
+        } catch (error) {
+          console.error("Error reading startup reader theme:", error);
+        }
       })();
     </script>
   </head>
