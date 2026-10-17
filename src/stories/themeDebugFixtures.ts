@@ -286,3 +286,32 @@ export const THEME_DEBUG_LONG_ARTICLE = {
   `,
 } satisfies Article;
 
+
+const themeDebugImage = (width: number, height: number, label: string, hue: number) =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},55%,62%)"/><stop offset="1" stop-color="hsl(${hue + 40},55%,38%)"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><text x="50%" y="50%" fill="white" font-family="system-ui" font-size="${Math.round(Math.min(width, height) / 9)}" text-anchor="middle" dominant-baseline="middle">${label} ${width}×${height}</text></svg>`,
+  )}`;
+
+export const THEME_DEBUG_IMAGE_ARTICLE = {
+  ...THEME_DEBUG_ARTICLES[0],
+  hash: 'theme-article-images',
+  title: 'Standalone images break out of the reading column',
+  content: `
+    <p>Images that occupy their own line render at least as wide as the text column and extend into the side margins on wide windows.</p>
+    <figure><img src="${themeDebugImage(1600, 900, 'Wide', 210)}"><figcaption>A wide landscape image inside a figure with a caption.</figcaption></figure>
+    <p>A paragraph between images keeps the normal reading measure, so the breakout reads as intentional rhythm rather than a layout bug.</p>
+    <p><img src="${themeDebugImage(760, 430, 'Medium', 140)}"></p>
+    <p>Small images stay at their natural size and centered instead of being upscaled:</p>
+    <p><img src="${themeDebugImage(220, 120, 'Small', 30)}"></p>
+    <p>Tall portraits are capped by viewport height rather than widened:</p>
+    <p><img src="${themeDebugImage(900, 1400, 'Portrait', 280)}"></p>
+    <p>Inline images like <img src="${themeDebugImage(40, 20, 'i', 0)}" width="40" height="20"> stay in the text flow.</p>
+    <blockquote><img src="${themeDebugImage(1200, 600, 'Quoted', 330)}"><br>Images inside quotes stay in the quote.</blockquote>
+    <p>Image-only rows become a gallery grid:</p>
+    <figure><img src="${themeDebugImage(1200, 800, 'One', 10)}"><img src="${themeDebugImage(1200, 900, 'Two', 90)}"><img src="${themeDebugImage(900, 1200, 'Three', 180)}"><figcaption>Three images in one block.</figcaption></figure>
+    <p>Wide tables and code blocks may use the margins only as far as they need:</p>
+    <table><thead><tr><th>Feed</th><th>Interval</th><th>Last fetch</th><th>Articles</th><th>Unread</th><th>Failures</th><th>Backoff</th><th>Encoding</th></tr></thead><tbody><tr><td>Design Systems Weekly</td><td>30 min</td><td>2026-10-17 12:04</td><td>1,284</td><td>12</td><td>0</td><td>none</td><td>UTF-8</td></tr></tbody></table>
+    <pre><code class="language-ts">const bleed = clamp(0, max(inlinePadding, (scrollWidth - maxWidth) / 2) - edgeGap, maxBleed); // per side, recomputed on resize</code></pre>
+    <p><em>End of the image fixture.</em></p>
+  `,
+} satisfies Article;

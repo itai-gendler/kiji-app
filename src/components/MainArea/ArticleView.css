@@ -135,6 +135,27 @@ html[data-os="other"] .article-view.article-view-embedded {
   cursor: not-allowed;
 }
 
+/* Reading progress: thin accent line along the header bar's bottom edge.
+   ArticleView writes transform: scaleX(0..1) on scroll (no React render). */
+.article-view-reading-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.article-view-reading-progress-bar {
+  height: 100%;
+  background-color: var(--system-accent-color);
+  opacity: 0.75;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.08s linear;
+}
+
 /* Action Buttons Container */
 .article-view-actions {
   display: flex;
@@ -183,9 +204,19 @@ html[data-os="other"] .article-view.article-view-embedded {
   cursor: not-allowed;
 }
 
+/* Registered as <length> so the bleed resolves here (against the scroll
+   container) and reaches the article-content shadow tree as a plain px value. */
+@property --article-media-bleed {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
+}
+
 /* Article View Scroll Area */
 .article-view-scroll {
   flex: 1;
+  /* Query container for the standalone-image breakout width (100cqi = visible scroll width). */
+  container-type: inline-size;
   overflow-y: auto;
   overflow-x: hidden;
   /* Reserve scrollbar gutter so content width stays stable when scrollbar appears/disappears. */
@@ -232,6 +263,10 @@ html[data-os="other"] .article-view.article-view-embedded {
   padding: 32px var(--article-content-inline-padding) 80px;
   /* Keep the readable column width capped while preserving side breathing room. */
   width: min(100%, calc(var(--max-article-content-width) + var(--article-content-inline-padding) * 2));
+  /* Standalone images extend past the text column by up to this much per side,
+     always leaving the edge gap to the window edge when the app is narrowed. */
+  --article-media-max-bleed: 120px;
+  --article-media-edge-gap: 12px;
   margin: 0 auto;
   box-sizing: border-box;
   will-change: transform, opacity;
@@ -330,6 +365,19 @@ html[data-os="other"] .article-view.article-view-embedded {
   word-break: break-word; /* fallback for some browsers */
 }
 
+/* Published date · reading time, under the source line */
+.article-view-reading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--theme-timestamp-color);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Article Metadata */
 .article-view-meta {
   display: flex;
@@ -359,8 +407,15 @@ html[data-os="other"] .article-view.article-view-embedded {
   text-align: var(--article-content-text-align);
   color: var(--theme-article-content-color);
   font-family: var(--font-family-article-content);
-  overflow: hidden;
-  contain: paint;
+  /* Column side space = max(inline padding, (scroll width - column) / 2). */
+  --article-media-bleed: clamp(
+    0px,
+    max(var(--article-content-inline-padding), (100cqi - var(--max-article-content-width)) / 2) - var(--article-media-edge-gap),
+    var(--article-media-max-bleed)
+  );
+  /* No clipping here: standalone images break out of the column. Horizontal
+     overflow is clipped by .article-view-scroll (overflow-x: hidden). */
+  overflow: visible;
 }
 
 .article-view-audio {

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
@@ -33,7 +33,9 @@ import {
 import { normalizePublishedDate } from '@/services/articles/publishedDateNormalizer';
 import { renderTextWithNonAsciiFont } from '@/utils/nonAsciiTypography';
 import { StatefulButtonGroup, type ButtonState } from '@/components/common/StatefulButtonGroup';
-import { ArticleContent, ArticleContentSkeleton, type ArticleContentMetricsDetail } from '@/components/common/ArticleContent';
+import { ArticleContent, ArticleContentSkeleton, type ArticleContentMetricsDetail, type ArticleImageOpenDetail } from '@/components/common/ArticleContent';
+import { estimateReadingMinutes, formatArticleDate } from '@/utils/readingTime';
+import { ArticleImageLightbox } from './ArticleImageLightbox';
 import { ArticlePdfViewer } from '@/components/common/ArticlePdf';
 import { InteractionProfiler } from '@/components/common/InteractionProfiler';
 import {
@@ -1084,6 +1086,8 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
   const [loadingSource, setLoadingSource] = useState<string>('');
   const [loadingDate, setLoadingDate] = useState<string>('');
   const [hasScrollOffset, setHasScrollOffset] = useState(false);
+  const [lightboxDetail, setLightboxDetail] = useState<ArticleImageOpenDetail | null>(null);
+  const readingProgressRef = useRef<HTMLDivElement>(null);
   const [processedArticleBodyHtml, setProcessedArticleBodyHtml] = useState<string | null>(null);
   const [processedArticleBodyKey, setProcessedArticleBodyKey] = useState<string | null>(null);
   const [articleBodyProcessing, setArticleBodyProcessing] = useState(false);
@@ -1121,6 +1125,8 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
   const rawArticleBodyHtml = isReaderModeActive && !useSavedArticleSnapshot
     ? (readerContent?.content || '')
     : (articleToShow?.content || '');
+  const readingMinutes = useMemo(() => estimateReadingMinutes(rawArticleBodyHtml), [rawArticleBodyHtml]);
+  const publishedDateLabel = formatArticleDate(articleToShow?.publishedDate);
   // Phase 1: sanitize immediately for first render so users never see raw
   // feed-provided inline styles before async preprocessing finishes.
   const firstPaintSanitizedArticleBodyHtml = sanitizeArticleHtmlStyles(rawArticleBodyHtml);
@@ -1492,9 +1498,34 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
   const handleArticleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     if (isClosing) return;
 
-    const isScrolled = event.currentTarget.scrollTop > 0;
+    const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
+    const isScrolled = scrollTop > 0;
     setHasScrollOffset((previous) => (previous === isScrolled ? previous : isScrolled));
+
+    // Written straight to the bar's style: no React render per scroll frame.
+    const progressBar = readingProgressRef.current;
+    if (progressBar) {
+      const scrollable = scrollHeight - clientHeight;
+      const progress = scrollable > 0 ? Math.min(1, Math.max(0, scrollTop / scrollable)) : 0;
+      progressBar.style.transform = `scaleX(${progress})`;
+    }
   }, [isClosing]);
+
+  const handleImageOpen = useCallback((detail: ArticleImageOpenDetail) => {
+    setLightboxDetail(detail);
+  }, []);
+
+  const handleLightboxClose = useCallback(() => {
+    setLightboxDetail(null);
+  }, []);
+
+  // A new article (or closing the view) resets progress and dismisses the lightbox.
+  useDependencyEffect(() => {
+    setLightboxDetail(null);
+    if (readingProgressRef.current) {
+      readingProgressRef.current.style.transform = 'scaleX(0)';
+    }
+  }, [articleToShow?.hash, isClosing]);
 
   const updateLastReadTime = useCallback(async (article: Article) => {
     const lastReadAt = new Date().toISOString();
@@ -2210,6 +2241,7 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
             onLinkClick={handleArticleLinkClick}
             onArticleContextMenu={handleArticleContextMenu}
             onContentMetrics={handleArticleContentMetrics}
+            onImageOpen={handleImageOpen}
             mediaProcessingDelayMs={mediaProcessingDelayMs}
             suspendProcessing={isClosing}
           />
@@ -2239,6 +2271,7 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
           onLinkClick={handleArticleLinkClick}
           onArticleContextMenu={handleArticleContextMenu}
           onContentMetrics={handleArticleContentMetrics}
+          onImageOpen={handleImageOpen}
           mediaProcessingDelayMs={mediaProcessingDelayMs}
           suspendProcessing={isClosing}
         />
@@ -2348,6 +2381,9 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
               </button>
             </div>
           </motion.div>
+          <div className="article-view-reading-progress" aria-hidden="true">
+            <div ref={readingProgressRef} className="article-view-reading-progress-bar" />
+          </div>
         </div>
         <div
           ref={scrollContainerRef}
@@ -2431,6 +2467,15 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
                       )}
                     </div>
                   )}
+                  {(publishedDateLabel || readingMinutes > 0) && (
+                    <div className="article-view-reading-meta" data-component="article-reading-meta">
+                      {publishedDateLabel && (
+                        <time dateTime={articleToShow.publishedDate}>{publishedDateLabel}</time>
+                      )}
+                      {publishedDateLabel && readingMinutes > 0 && <span aria-hidden="true">·</span>}
+                      {readingMinutes > 0 && <span>{readingMinutes} min read</span>}
+                    </div>
+                  )}
                 </div>
               )}
             </header>
@@ -2441,6 +2486,9 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
             </div>
           </motion.article>
         </div>
+        {lightboxDetail && (
+          <ArticleImageLightbox detail={lightboxDetail} onClose={handleLightboxClose} />
+        )}
       </motion.div>
     </InteractionProfiler>
   );

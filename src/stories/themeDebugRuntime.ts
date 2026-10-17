@@ -14,6 +14,7 @@ export type ThemeDebugVariant =
   | 'article-list-loading'
   | 'article-view-standalone'
   | 'article-view-long'
+  | 'article-view-images'
   | 'article-view-embedded';
 
 const EMPTY_HASHES = new Set<string>();
@@ -179,6 +180,13 @@ const variants = {
     ui: baseUi,
   },
   'article-view-long': {
+    navigation: baseNavigation,
+    collection: embeddedCollection,
+    actions: baseCollectionActions,
+    overlay: baseOverlay,
+    ui: baseUi,
+  },
+  'article-view-images': {
     navigation: baseNavigation,
     collection: embeddedCollection,
     actions: baseCollectionActions,

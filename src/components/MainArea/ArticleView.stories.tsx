@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import {
   THEME_DEBUG_ARTICLES,
+  THEME_DEBUG_IMAGE_ARTICLE,
   THEME_DEBUG_LONG_ARTICLE,
 } from '@/stories/themeDebugFixtures';
 import { ArticleView } from './ArticleView';
@@ -40,6 +41,16 @@ export const LongArticle: Story = {
   },
   parameters: {
     kiji: { variant: 'article-view-long' },
+  },
+  render: renderStandalone,
+};
+
+export const StandaloneImages: Story = {
+  args: {
+    article: THEME_DEBUG_IMAGE_ARTICLE,
+  },
+  parameters: {
+    kiji: { variant: 'article-view-images' },
   },
   render: renderStandalone,
 };

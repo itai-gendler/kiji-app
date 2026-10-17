@@ -27,6 +27,7 @@ import prismDarkTheme from 'prismjs/themes/prism-tomorrow.css?raw';
 import liteYouTubeStyles from 'lite-youtube-embed/src/lite-yt-embed.css?raw';
 import brokenImagePlaceholderSvg from '@/assets/icons/hide_image.svg?raw';
 import { unwrapEmbeddedMediaAnchors, convertYouTubeIframesInContainer } from './mediaEmbedUtils';
+import { classifyStandaloneMedia, collectLightboxImages, handleStandaloneMediaLoad } from './standaloneMediaLayout';
 import {
   activateLiteYoutubeInPlace,
   createYouTubePlaceholderElement,
@@ -145,34 +146,201 @@ class ArticleContentElement extends HTMLElement {
         border-radius: 8px;
       }
 
-      .article-content-container figure:has(> img:only-child),
-      .article-content-container figure:has(> picture:only-child),
-      .article-content-container figure:has(> video:only-child),
-      .article-content-container figure:has(> audio:only-child),
-      .article-content-container figure:has(> feed-audio-player:only-child),
-      .article-content-container figure:has(> iframe:only-child),
-      .article-content-container figure:has(> lite-youtube:only-child),
-      .article-content-container figure:has(> embed:only-child),
-      .article-content-container figure:has(> object:only-child) {
+      .article-content-container figure:has(> img:only-child):not(.ac-media-bleed, .ac-media-natural, .ac-media-portrait),
+      .article-content-container figure:has(> picture:only-child):not(.ac-media-bleed, .ac-media-natural, .ac-media-portrait),
+      .article-content-container figure:has(> video:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> audio:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> feed-audio-player:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> iframe:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> lite-youtube:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> embed:only-child):not(.ac-media-bleed),
+      .article-content-container figure:has(> object:only-child):not(.ac-media-bleed) {
         margin-left: 0 !important;
         margin-right: 0 !important;
         width: 100% !important;
         max-width: none !important;
       }
 
-      .article-content-container figure:has(> img:only-child) > img,
-      .article-content-container figure:has(> picture:only-child) > picture,
-      .article-content-container figure:has(> video:only-child) > video,
-      .article-content-container figure:has(> audio:only-child) > audio,
-      .article-content-container figure:has(> feed-audio-player:only-child) > feed-audio-player,
-      .article-content-container figure:has(> iframe:only-child) > iframe,
-      .article-content-container figure:has(> lite-youtube:only-child) > lite-youtube,
-      .article-content-container figure:has(> embed:only-child) > embed,
-      .article-content-container figure:has(> object:only-child) > object {
+      .article-content-container figure:has(> img:only-child):not(.ac-media-bleed, .ac-media-natural, .ac-media-portrait) > img,
+      .article-content-container figure:has(> picture:only-child):not(.ac-media-bleed, .ac-media-natural, .ac-media-portrait) > picture,
+      .article-content-container figure:has(> video:only-child):not(.ac-media-bleed) > video,
+      .article-content-container figure:has(> audio:only-child):not(.ac-media-bleed) > audio,
+      .article-content-container figure:has(> feed-audio-player:only-child):not(.ac-media-bleed) > feed-audio-player,
+      .article-content-container figure:has(> iframe:only-child):not(.ac-media-bleed) > iframe,
+      .article-content-container figure:has(> lite-youtube:only-child):not(.ac-media-bleed) > lite-youtube,
+      .article-content-container figure:has(> embed:only-child):not(.ac-media-bleed) > embed,
+      .article-content-container figure:has(> object:only-child):not(.ac-media-bleed) > object {
         display: block;
         width: 100% !important;
         max-width: none !important;
         box-sizing: border-box;
+      }
+
+      /* Standalone images (own line): at least column width, growing up to the
+         natural width and at most --article-media-bleed past each column edge.
+         The host computes the bleed from the scroll width so a narrow window
+         keeps an edge gap. Margins use the same % basis as width to stay centered. */
+      .article-content-container .ac-media-bleed {
+        --ac-bleed: var(--article-media-bleed, 0px);
+        --ac-media-width: clamp(100%, var(--ac-natural-width, 100vw), calc(100% + 2 * var(--ac-bleed)));
+        display: block;
+        width: var(--ac-media-width) !important;
+        max-width: none !important;
+        height: auto;
+        margin: 2em calc((100% - var(--ac-media-width)) / 2) !important;
+        padding: 0 !important;
+        box-sizing: border-box;
+        text-align: left;
+      }
+
+      .article-content-container .ac-media-bleed img,
+      .article-content-container .ac-media-bleed picture,
+      .article-content-container .ac-media-bleed a {
+        display: block;
+        width: 100% !important;
+        max-width: none !important;
+        height: auto !important;
+        margin: 0 !important;
+      }
+
+      .article-content-container .ac-media-bleed :is(iframe, video, lite-youtube) {
+        margin: 0 !important;
+      }
+
+      /* Image-only blocks with 2+ images: bleed-width grid; crop to tidy cells
+         (the lightbox shows each image uncropped). */
+      .article-content-container .ac-media-gallery {
+        --ac-bleed: var(--article-media-bleed, 0px);
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+        gap: 6px;
+        width: calc(100% + 2 * var(--ac-bleed)) !important;
+        max-width: none !important;
+        margin: 2em calc(-1 * var(--ac-bleed)) !important;
+        padding: 0 !important;
+        box-sizing: border-box;
+      }
+
+      .article-content-container .ac-media-gallery > :not(figcaption) {
+        display: block;
+        min-width: 0;
+        margin: 0 !important;
+        width: auto !important;
+        max-width: none !important;
+      }
+
+      .article-content-container .ac-media-gallery img {
+        display: block;
+        width: 100% !important;
+        max-width: none !important;
+        height: 100% !important;
+        aspect-ratio: 3 / 2;
+        object-fit: cover;
+        margin: 0 !important;
+        border-radius: 6px;
+      }
+
+      .article-content-container .ac-media-gallery > figcaption {
+        grid-column: 1 / -1;
+        padding-inline: var(--ac-bleed);
+        margin: 0.4em 0 0;
+        font-size: 0.82em;
+        line-height: 1.45;
+        text-align: center;
+        color: var(--ac-text-secondary);
+      }
+
+      /* Top-level tables / code: widen into the bleed only as far as content needs,
+         centered on the column. */
+      .article-content-container > .ac-block-wide {
+        box-sizing: border-box;
+        width: max-content;
+        min-width: 100%;
+        max-width: calc(100% + 2 * var(--article-media-bleed, 0px));
+        margin-left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .article-content-container > p.ac-lead {
+        font-size: 1.12em;
+        line-height: 1.6;
+        color: var(--ac-text-primary);
+      }
+
+      /* Loading placeholder + fade-in for laid-out images. */
+      .article-content-container img.ac-img-pending {
+        background-color: color-mix(in srgb, var(--ac-text-color) 7%, transparent);
+        min-height: 6em;
+      }
+
+      .article-content-container img.ac-img-pending:not([width]):not([height]) {
+        aspect-ratio: 16 / 9;
+      }
+
+      .article-content-container .ac-media-gallery img.ac-img-pending:not([width]):not([height]) {
+        aspect-ratio: 3 / 2;
+      }
+
+      .article-content-container img.ac-img-reveal {
+        animation: ac-img-fade-in 0.28s ease-out;
+      }
+
+      @keyframes ac-img-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .article-content-container img.ac-img-reveal { animation: none; }
+      }
+
+      /* Unlinked laid-out images open in the lightbox. */
+      .article-content-container .ac-media-bleed img:not(a img),
+      .article-content-container img.ac-media-bleed,
+      .article-content-container .ac-media-natural img:not(a img),
+      .article-content-container img.ac-media-natural,
+      .article-content-container .ac-media-portrait img:not(a img),
+      .article-content-container img.ac-media-portrait,
+      .article-content-container .ac-media-gallery img:not(a img) {
+        cursor: zoom-in;
+      }
+
+      .article-content-container .ac-media-natural,
+      .article-content-container .ac-media-portrait {
+        display: block;
+        max-width: 100% !important;
+        margin: 2em auto !important;
+        text-align: center;
+      }
+
+      .article-content-container .ac-media-natural img,
+      .article-content-container .ac-media-portrait img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto !important;
+      }
+
+      /* Tall images: never widened; capped by viewport height instead. */
+      .article-content-container img.ac-media-portrait,
+      .article-content-container .ac-media-portrait img {
+        width: auto !important;
+        max-height: 80vh;
+        height: auto !important;
+      }
+
+      .article-content-container .ac-media-bleed > figcaption {
+        padding-inline: var(--ac-bleed);
+      }
+
+      .article-content-container .ac-media-bleed > figcaption,
+      .article-content-container .ac-media-natural > figcaption,
+      .article-content-container .ac-media-portrait > figcaption {
+        margin: 0.75em 0 0;
+        font-size: 0.82em;
+        line-height: 1.45;
+        text-align: center;
+        color: var(--ac-text-secondary);
       }
 
       .article-content-broken-image {
@@ -425,6 +593,7 @@ class ArticleContentElement extends HTMLElement {
     this.root.addEventListener('click', this.handleLinkClick.bind(this) as EventListener, true);
     this.root.addEventListener('contextmenu', this.handleArticleContentContextMenu.bind(this) as EventListener);
     this.root.addEventListener('error', this.handleImageLoadError.bind(this), true);
+    this.root.addEventListener('load', this.handleMediaLoad.bind(this), true);
   }
 
   /**
@@ -447,10 +616,13 @@ class ArticleContentElement extends HTMLElement {
       this.lastContent = html;
       wrapNonAsciiTextNodes(container);
 
+      classifyStandaloneMedia(container, container.clientWidth);
+
       if (options?.isPreprocessed) {
         unwrapEmbeddedMediaAnchors(container);
         convertYouTubeIframesInContainer(container, options?.baseUrl ?? window.location.href);
         finalizeYouTubePlaceholders(container);
+        classifyStandaloneMedia(container, container.clientWidth);
         this.dispatchContentMetrics(container, html);
         return;
       }
@@ -604,6 +776,7 @@ class ArticleContentElement extends HTMLElement {
       this.disableMediaAutoplay(container, baseUrl);
       this.replaceAudioElements(container);
       this.normalizeMediaFigureWrappers(container);
+      classifyStandaloneMedia(container, container.clientWidth);
       this.dispatchContentMetrics(container, this.lastContent);
       this.mediaEnhancementTimer = null;
     };
@@ -788,6 +961,15 @@ class ArticleContentElement extends HTMLElement {
     });
   }
 
+  private handleMediaLoad(event: Event): void {
+    const target = event.target;
+    if (!(target instanceof HTMLImageElement)) {
+      return;
+    }
+    const container = this.root.querySelector('.article-content-container');
+    handleStandaloneMediaLoad(target, container?.clientWidth ?? 0);
+  }
+
   private handleImageLoadError(event: Event): void {
     const target = event.target;
     if (!(target instanceof HTMLImageElement)) {
@@ -890,6 +1072,10 @@ class ArticleContentElement extends HTMLElement {
       return;
     }
 
+    if (this.handleImageOpenClick(event, target)) {
+      return;
+    }
+
     const clickResult = resolveArticleContentClick(target);
 
     if (clickResult.type === 'embedded-media') {
@@ -926,6 +1112,44 @@ class ArticleContentElement extends HTMLElement {
       bubbles: true,
       composed: true,
     }));
+  }
+
+  /**
+   * Unlinked standalone/gallery images open in the host lightbox. The event
+   * carries every lightbox image in the article so the host can page through.
+   */
+  private handleImageOpenClick(event: MouseEvent, target: HTMLElement): boolean {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return false;
+    }
+    const image = target.closest('img');
+    if (!(image instanceof HTMLImageElement)) {
+      return false;
+    }
+    const container = this.root.querySelector('.article-content-container');
+    if (!container) {
+      return false;
+    }
+    const images = collectLightboxImages(container);
+    const index = images.indexOf(image);
+    if (index < 0) {
+      return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.dispatchEvent(new CustomEvent('article-image-open', {
+      detail: {
+        index,
+        images: images.map((item) => ({
+          src: item.currentSrc || item.src,
+          alt: item.alt || item.closest('figure')?.querySelector('figcaption')?.textContent?.trim() || '',
+        })),
+      },
+      bubbles: true,
+      composed: true,
+    }));
+    return true;
   }
 
   disconnectedCallback(): void {

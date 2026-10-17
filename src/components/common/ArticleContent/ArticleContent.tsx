@@ -7,6 +7,7 @@ interface ArticleContentProps {
   onLinkClick?: (href: string) => void;
   onArticleContextMenu?: (detail: { kind: 'link' | 'image'; url: string }) => void;
   onContentMetrics?: (detail: ArticleContentMetricsDetail) => void;
+  onImageOpen?: (detail: ArticleImageOpenDetail) => void;
   mediaProcessingDelayMs?: number;
   suspendProcessing?: boolean;
 }
@@ -18,6 +19,16 @@ export interface ArticleContentMetricsDetail {
   mediaElementCount: number;
   linkElementCount: number;
   textChars: number;
+}
+
+export interface ArticleLightboxImage {
+  src: string;
+  alt: string;
+}
+
+export interface ArticleImageOpenDetail {
+  index: number;
+  images: ArticleLightboxImage[];
 }
 
 interface ArticleContentElement extends HTMLElement {
@@ -36,6 +47,7 @@ const ArticleContent = ({
   onLinkClick,
   onArticleContextMenu,
   onContentMetrics,
+  onImageOpen,
   mediaProcessingDelayMs = 0,
   suspendProcessing = false,
 }: ArticleContentProps) => {
@@ -93,6 +105,22 @@ const ArticleContent = ({
       element.removeEventListener('article-link-click', handleLinkClick);
     };
   }, [onLinkClick]);
+
+  // Attach lightbox image-open event listener
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || !onImageOpen) return;
+
+    const handleImageOpen = (event: Event) => {
+      onImageOpen((event as CustomEvent<ArticleImageOpenDetail>).detail);
+    };
+
+    element.addEventListener('article-image-open', handleImageOpen);
+
+    return () => {
+      element.removeEventListener('article-image-open', handleImageOpen);
+    };
+  }, [onImageOpen]);
 
   // Attach article-content context menu event listener
   useEffect(() => {
