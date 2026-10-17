@@ -1,4 +1,4 @@
-import { feedsManager } from '@/services/feeds/feedsManager';
+import { feedsManager, type Feed } from '@/services/feeds/feedsManager';
 import { faviconFetcher } from '@/services/favicons/faviconFetcher';
 import { applyOpmlImportEntries } from './applyOpmlImportEntries';
 import {
@@ -29,6 +29,11 @@ export interface OpmlImportSummary {
   skippedDuplicate: number;
   invalid: number;
   failed: number;
+  /**
+   * Feeds that exist in the library but whose emoji / station attach (or station
+   * emoji) write failed after the feed row was committed.
+   */
+  partialFailures: number;
 }
 
 export interface OpmlImportedFeedRef {
@@ -43,6 +48,12 @@ export type OpmlImportNavigationTarget =
 export interface OpmlImportResult {
   summary: OpmlImportSummary;
   importedFeeds: OpmlImportedFeedRef[];
+  /**
+   * Rows created by this import (same order as `importedFeeds`), with the emoji
+   * and station tags this import applied, so the UI can publish them without
+   * re-reading each feed over IPC.
+   */
+  createdFeeds: Feed[];
   navigationTarget?: OpmlImportNavigationTarget;
 }
 

@@ -125,14 +125,27 @@ export const useApplicationMenuCommands = ({
         feedLibraryMutationBus.publishFeedDeleted(feedId);
       }
 
+      // Feeds are committed as deleted: a station delete failure below must
+      // not skip the library publish / selection clear, or deleted feeds stay
+      // clickable and the deleted source stays selected.
+      const remainingStations: typeof tags = [];
+      let stationDeleteError: unknown = null;
       for (const tag of tags) {
-        await tagsManager.deleteTag(tag.name);
+        try {
+          await tagsManager.deleteTag(tag.name);
+        } catch (error) {
+          stationDeleteError ??= error;
+          remainingStations.push({ ...tag, feedIds: [] });
+        }
       }
 
-      feedLibraryMutationBus.publishLibraryHydrated({ stations: [], unstationed: [] });
+      feedLibraryMutationBus.publishLibraryHydrated({ stations: remainingStations, unstationed: [] });
       clearFeedSelection();
-      await refreshTotalFeeds();
       notifyFeedLibraryChanged();
+      await refreshTotalFeeds();
+      if (stationDeleteError) {
+        throw stationDeleteError;
+      }
       sidebarIndicatorService.show(
         sidebarIndicatorDone('clearing', feeds.length, { subject: 'feeds' }),
         { durationMs: 5000 },

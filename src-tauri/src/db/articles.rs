@@ -45,9 +45,13 @@ pub struct ArticleQueryResponse {
 pub struct ArticleFeedMetaUpdate {
     pub feed_url: Option<Option<String>>,
     pub feed_title: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::feeds::deserialize_double_option")]
     pub feed_favicon: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::feeds::deserialize_double_option")]
     pub feed_favicon_has_transparency: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "super::feeds::deserialize_double_option")]
     pub feed_favicon_bg_light: Option<Option<String>>,
+    #[serde(default, deserialize_with = "super::feeds::deserialize_double_option")]
     pub feed_favicon_bg_dark: Option<Option<String>>,
     pub feed_image: Option<Option<String>>,
 }
@@ -1463,5 +1467,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["null-b"]
         );
+    }
+
+    #[test]
+    fn feed_meta_update_json_null_clears_favicon_columns_only() {
+        let parse = |json: &str| -> ArticleFeedMetaUpdate {
+            serde_json::from_str(json).expect("deserialize ArticleFeedMetaUpdate")
+        };
+        let absent = parse("{}");
+        assert_eq!(absent.feed_favicon, None);
+        assert_eq!(
+            parse(r#"{"feedFavicon":"data:x"}"#).feed_favicon,
+            Some(Some("data:x".to_string()))
+        );
+
+        let connection = setup_connection();
+        insert_feed(&connection, "f1");
+        insert_article(&connection, "a1", "f1", 0);
+        update_article_feed_meta(
+            &connection,
+            "f1",
+            parse(
+                r#"{"feedFavicon":"data:x","feedFaviconHasTransparency":true,
+                    "feedFaviconBgLight":"white","feedFaviconBgDark":"black","feedTitle":"T"}"#,
+            ),
+        )
+        .expect("seed article feed meta");
+
+        let cleared = parse(
+            r#"{"feedFavicon":null,"feedFaviconHasTransparency":null,
+                "feedFaviconBgLight":null,"feedFaviconBgDark":null,"feedTitle":null}"#,
+        );
+        assert_eq!(cleared.feed_favicon, Some(None));
+        assert_eq!(cleared.feed_favicon_has_transparency, Some(None));
+        assert_eq!(cleared.feed_favicon_bg_light, Some(None));
+        assert_eq!(cleared.feed_favicon_bg_dark, Some(None));
+        assert_eq!(cleared.feed_title, None, "feedTitle null stays 'unchanged'");
+        update_article_feed_meta(&connection, "f1", cleared).expect("clear article feed meta");
+
+        let row: (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT feed_favicon, feed_favicon_has_transparency, feed_favicon_bg_light,
+                        feed_favicon_bg_dark, feed_title
+                 FROM articles WHERE hash = 'a1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .expect("read article meta");
+        assert_eq!(row, (None, None, None, None, Some("T".to_string())));
     }
 }

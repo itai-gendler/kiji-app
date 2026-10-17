@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { tauriClient } from '@/lib/tauriClient';
+import { parseStructuredCommandError } from '@/lib/tauriClient/commandError';
 import * as articleStore from '@/stores/articleStore';
 import * as feedStore from '@/stores/feedStore';
 import { feedRefreshActivity } from '@/services/feeds/feedRefreshActivity';
@@ -91,6 +92,12 @@ class FeedSchedulerService {
   private listeners = new Set<(event: SchedulerEvent) => void>();
   private mode: BackgroundUpdateMode = 'every-15m';
   private nativeDriverActive = false;
+  /**
+   * Mode last applied to the running native driver (`scheduler_start` /
+   * `scheduler_reconfigure` resolved). Null while the driver is not known to
+   * be running. Lets `reconfigure` ignore unrelated settings changes.
+   */
+  private nativeDriverMode: BackgroundUpdateMode | null = null;
   private nativeTickUnlisten: UnlistenFn | null = null;
   private lastCycleStartedAt: number | null = null;
   private lastCycleCompletedAt: number | null = null;
@@ -173,6 +180,7 @@ class FeedSchedulerService {
       }
 
       this.nativeDriverActive = true;
+      this.nativeDriverMode = this.mode;
       logger.info('Scheduler', 'Started native feed scheduler driver', {
         mode: this.mode,
         result,
@@ -352,11 +360,25 @@ class FeedSchedulerService {
       }
       this.nativeDriverActive = false;
     }
+    this.nativeDriverMode = null;
 
     logger.info('Scheduler', 'Stopped feed scheduler lifecycle');
   }
 
   async reconfigure(mode: BackgroundUpdateMode): Promise<void> {
+    // `settings-changed` fires for every setting (theme, fonts, opacity...).
+    // When the background mode is unchanged and the native driver already
+    // runs with it, do nothing: cancelling the in-flight cycle and restarting
+    // the driver (which emits a fresh OnLaunch tick) would turn every
+    // cosmetic settings edit into a full-library refresh.
+    if (
+      mode === this.mode
+      && this.nativeDriverActive
+      && this.nativeDriverMode === mode
+    ) {
+      return;
+    }
+
     this.mode = mode;
     this.invalidateActiveCycle();
     void this.cancelActiveNativeCycle();
@@ -370,6 +392,7 @@ class FeedSchedulerService {
         return;
       }
       this.nativeDriverActive = true;
+      this.nativeDriverMode = mode;
     } catch (error) {
       logger.error('Scheduler', 'Failed to reconfigure native feed scheduler driver', { error });
     }
@@ -876,8 +899,12 @@ class FeedSchedulerService {
       return;
     }
 
+    const mode = this.mode;
     try {
-      await tauriClient.scheduler.reconfigure({ mode: this.mode });
+      await tauriClient.scheduler.reconfigure({ mode });
+      if (this.isCurrentLifecycle(lifecycleId) && this.nativeDriverActive) {
+        this.nativeDriverMode = mode;
+      }
     } catch (error) {
       logger.warn('Scheduler', 'Failed to ensure native feed scheduler driver is running', { error });
     }
@@ -959,6 +986,7 @@ class FeedSchedulerService {
       logger.warn('Scheduler', 'Failed to stop native driver for stale lifecycle', { error });
     }
     this.nativeDriverActive = false;
+    this.nativeDriverMode = null;
   }
 
   private async runScheduledCycle(
@@ -1241,16 +1269,7 @@ class FeedSchedulerService {
           && this.isCurrentLifecycle(lifecycleId)
           && cycleId === this.activeCycleId
         ) {
-          const syncedCounts = await articleStore.syncFeedCountsBatch(Array.from(feedsNeedingCountSync));
-          if (syncedCounts.length > 0) {
-            feedLibraryMutationBus.publishFeedsCountsUpdated(
-              syncedCounts.map((counts) => ({
-                feedId: counts.feedId,
-                unreadCount: counts.unreadCount,
-                articleCount: counts.articleCount,
-              })),
-            );
-          }
+          await this.syncAndPublishFeedCounts(Array.from(feedsNeedingCountSync), cycleId);
         }
       } finally {
         releaseQueuedFeeds?.();
@@ -1508,16 +1527,7 @@ class FeedSchedulerService {
   ): Promise<void> {
     const feedIdsToSync = collectFeedIdsNeedingCountSync(result.feedResults);
     if (feedIdsToSync.length > 0) {
-      const syncedCounts = await articleStore.syncFeedCountsBatch(feedIdsToSync);
-      if (syncedCounts.length > 0) {
-        feedLibraryMutationBus.publishFeedsCountsUpdated(
-          syncedCounts.map((counts) => ({
-            feedId: counts.feedId,
-            unreadCount: counts.unreadCount,
-            articleCount: counts.articleCount,
-          })),
-        );
-      }
+      await this.syncAndPublishFeedCounts(feedIdsToSync, cycleId);
     }
 
     // Native cycles bypass the per-feed `feed-updated` emit in the legacy
@@ -1533,6 +1543,36 @@ class FeedSchedulerService {
           newArticleCount,
         })),
       });
+    }
+  }
+
+  /**
+   * Recompute sidebar counts after a cycle's inserts are already committed.
+   * A count-sync failure must not fail the cycle: the articles exist in
+   * SQLite, so list refresh events and the cycle fetch outcome still apply,
+   * and counts self-heal on the next sync.
+   */
+  private async syncAndPublishFeedCounts(feedIds: string[], cycleId: number): Promise<void> {
+    let syncedCounts: Awaited<ReturnType<typeof articleStore.syncFeedCountsBatch>>;
+    try {
+      syncedCounts = await articleStore.syncFeedCountsBatch(feedIds);
+    } catch (error) {
+      logger.warn('Scheduler', 'Failed to sync feed counts after refresh cycle', {
+        error,
+        cycleId,
+        feedCount: feedIds.length,
+      });
+      return;
+    }
+
+    if (syncedCounts.length > 0) {
+      feedLibraryMutationBus.publishFeedsCountsUpdated(
+        syncedCounts.map((counts) => ({
+          feedId: counts.feedId,
+          unreadCount: counts.unreadCount,
+          articleCount: counts.articleCount,
+        })),
+      );
     }
   }
 
@@ -1628,7 +1668,14 @@ class FeedSchedulerService {
     } catch (error) {
       settleQueuedFeed();
 
-      if (error instanceof Error && error.name === 'AbortError') {
+      // A cancelled cycle is not a feed failure. Tauri-cancelled fetches reject
+      // with the raw FEED_REQUEST_CANCELLED command error (not an AbortError),
+      // so also honour the cycle signal and the structured cancel code.
+      if (
+        signal.aborted
+        || (error instanceof Error && error.name === 'AbortError')
+        || parseStructuredCommandError(error)?.code === 'FEED_REQUEST_CANCELLED'
+      ) {
         return;
       }
 

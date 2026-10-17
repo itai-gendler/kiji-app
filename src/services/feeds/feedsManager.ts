@@ -20,6 +20,11 @@ export interface AddFeedOptions {
   skipMetadataFetch?: boolean;
   skipFaviconRefresh?: boolean;
   id?: string;
+  /**
+   * Precomputed untagged sort order. When provided, addFeed skips reading the
+   * whole library (feeds_list) just to compute the next slot.
+   */
+  sortOrder?: number;
 }
 
 export interface RefreshFeedResult {
@@ -48,14 +53,16 @@ class FeedsManager {
       throw new Error("This feed URL already exists in your library.");
     }
 
-    const existingFeeds = await this.getAllFeeds();
+    const existingFeeds = options.sortOrder === undefined ? await this.getAllFeeds() : null;
     const metadata = options.skipMetadataFetch
       ? {}
       : await this.extractFeedMetadata(normalizedUrl);
     const now = new Date();
     const untaggedSortOrder = existingFeeds
-      .filter((feed) => !feed.tags || feed.tags.length === 0)
-      .reduce((max, feed) => Math.max(max, feed.sortOrder ?? 0), -1) + 1;
+      ? existingFeeds
+        .filter((feed) => !feed.tags || feed.tags.length === 0)
+        .reduce((max, feed) => Math.max(max, feed.sortOrder ?? 0), -1) + 1
+      : options.sortOrder;
     const feed: Feed = {
       id: options.id ?? this.generateId(),
       url: normalizedUrl,
@@ -80,10 +87,15 @@ class FeedsManager {
     return (await this.getFeedById(feed.id)) ?? feed;
   }
 
-  async addFeedWithoutMetadata(url: string, title?: string): Promise<Feed> {
+  async addFeedWithoutMetadata(
+    url: string,
+    title?: string,
+    options: { sortOrder?: number } = {},
+  ): Promise<Feed> {
     return this.addFeed(url, title, {
       skipMetadataFetch: true,
       skipFaviconRefresh: true,
+      sortOrder: options.sortOrder,
     });
   }
 
@@ -276,11 +288,13 @@ class FeedsManager {
       faviconFetchFailed: true,
       lastFaviconRefresh: refreshedAt,
     });
+    // Explicit null: undefined keys are dropped by JSON.stringify and would
+    // leave the denormalized article favicon columns stale.
     await articleStore.updateFeedMeta(id, {
-      feedFavicon: undefined,
-      feedFaviconHasTransparency: undefined,
-      feedFaviconBgLight: undefined,
-      feedFaviconBgDark: undefined,
+      feedFavicon: null,
+      feedFaviconHasTransparency: null,
+      feedFaviconBgLight: null,
+      feedFaviconBgDark: null,
     });
     return feedStore.getById(id);
   }

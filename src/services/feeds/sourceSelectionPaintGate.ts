@@ -17,13 +17,23 @@ export interface ArticleListPaintGateOptions {
 }
 
 let paintGateRafId: number | null = null;
+let paintGateFallbackTimerId: number | null = null;
 let refreshDebounceTimerId: number | null = null;
 
-export const cancelSourceSelectionRefreshSchedule = (): void => {
+const clearPaintGateStart = (): void => {
   if (paintGateRafId !== null) {
     window.cancelAnimationFrame(paintGateRafId);
     paintGateRafId = null;
   }
+
+  if (paintGateFallbackTimerId !== null) {
+    window.clearTimeout(paintGateFallbackTimerId);
+    paintGateFallbackTimerId = null;
+  }
+};
+
+export const cancelSourceSelectionRefreshSchedule = (): void => {
+  clearPaintGateStart();
 
   if (refreshDebounceTimerId !== null) {
     window.clearTimeout(refreshDebounceTimerId);
@@ -112,8 +122,17 @@ export const scheduleSourceRefreshAfterPaint = (
   sidebarSwitchTrace.mark(payload.token, 'paint-gate-scheduled');
   const paintGateStartedAt = performance.now();
 
-  paintGateRafId = window.requestAnimationFrame(() => {
-    paintGateRafId = null;
+  // WebKit stops rAF for an occluded-but-"visible" window (behind another app,
+  // another Space, launched in the background for last-selection restore).
+  // Without the timer fallback Phase B never ran and the selection's scheduler
+  // pause was held until its 10-minute safety release.
+  let paintGateStarted = false;
+  const startPaintGate = (): void => {
+    if (paintGateStarted) {
+      return;
+    }
+    paintGateStarted = true;
+    clearPaintGateStart();
 
     void (async () => {
       const painted = await waitForArticleListPaintGate(options.isSelectionActive, payload.token);
@@ -150,7 +169,13 @@ export const scheduleSourceRefreshAfterPaint = (
         options.onRefreshRequested(payload);
       }, SOURCE_SELECTION_REFRESH_DEBOUNCE_MS);
     })();
-  });
+  };
+
+  paintGateFallbackTimerId = window.setTimeout(startPaintGate, SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS);
+  const rafId = window.requestAnimationFrame(startPaintGate);
+  if (!paintGateStarted) {
+    paintGateRafId = rafId;
+  }
 };
 
 /** Test helper for fake-timer suites. */

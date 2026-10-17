@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import { feedsManager } from '@/services/feeds/feedsManager';
 import { getAllFeedMetadataCached } from '@/services/feeds/feedMetadataCache';
+import { logger } from '@/services/logger';
 import { articlesManager } from '@/services/articles/articlesManager';
 import {
   useFeedDeletedMutation,
@@ -182,14 +183,20 @@ export const FeedList: React.FC<FeedListProps> = ({ showAddModal, onCloseAddModa
     getId: (feed) => feed.id,
     persist: persistUnstationedOrder,
     onReorder: (nextItems) => setFeeds(nextItems.map((feed, sortOrder) => ({ ...feed, sortOrder }))),
-    onRollback: () => { void loadFeeds({ force: true }); },
+    onRollback: () => {
+      loadFeeds({ force: true }).catch((error: unknown) => {
+        logger.warn('FeedList', 'Failed to reload unstationed feeds after reorder rollback', { error });
+      });
+    },
   });
 
   useEffect(() => {
     let cancelled = false;
     const run = () => {
       if (!cancelled) {
-        void loadFeeds();
+        loadFeeds().catch((error: unknown) => {
+          logger.warn('FeedList', 'Failed to load unstationed feeds', { error });
+        });
       }
     };
     const idleId = typeof window.requestIdleCallback === 'function'

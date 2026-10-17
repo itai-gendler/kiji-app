@@ -81,11 +81,20 @@ describe('opmlImportService', () => {
         skippedDuplicate: 2,
         invalid: 1,
         failed: 0,
+        partialFailures: 0,
       },
       importedFeeds: [
         {
           id: 'feed-New Feed',
           url: 'https://new.com/rss/',
+        },
+      ],
+      createdFeeds: [
+        {
+          id: 'feed-New Feed',
+          url: 'https://new.com/rss/',
+          title: 'New Feed',
+          tags: ['Tech'],
         },
       ],
       navigationTarget: {
@@ -94,7 +103,12 @@ describe('opmlImportService', () => {
       },
     });
     expect(feedsManager.addFeedWithoutMetadata).toHaveBeenCalledTimes(1);
-    expect(feedsManager.addFeedWithoutMetadata).toHaveBeenCalledWith('https://new.com/rss/', 'New Feed');
+    // Library has one untagged feed (no sortOrder → 0), so new rows start at 1.
+    expect(feedsManager.addFeedWithoutMetadata).toHaveBeenCalledWith(
+      'https://new.com/rss/',
+      'New Feed',
+      { sortOrder: 1 },
+    );
     expect(tagsManager.addTagToFeed).toHaveBeenCalledWith('feed-New Feed', 'Tech');
     expect(tagsManager.addTagToFeed).toHaveBeenCalledWith('existing-1', 'Tech');
     expect(tagsManager.updateTag).not.toHaveBeenCalled();
@@ -138,6 +152,7 @@ describe('opmlImportService', () => {
       skippedDuplicate: 3,
       invalid: 0,
       failed: 0,
+      partialFailures: 0,
     });
     expect(feedsManager.addFeedWithoutMetadata).not.toHaveBeenCalled();
     expect(tagsManager.addTagToFeed).toHaveBeenCalledWith('existing-1', 'Beta');
@@ -248,5 +263,81 @@ describe('opmlImportService', () => {
       type: 'station',
       stationName: 'Football',
     });
+  });
+  it('assigns untagged sort orders from one library read instead of re-reading per feed', async () => {
+    vi.mocked(feedsManager.getAllFeeds).mockResolvedValue([
+      { id: 'u-1', url: 'https://u1.com/feed', tags: [], sortOrder: 4 } as never,
+      { id: 'u-2', url: 'https://u2.com/feed', tags: [], sortOrder: 9 } as never,
+      { id: 't-1', url: 'https://t1.com/feed', tags: ['Tech'], sortOrder: 50 } as never,
+    ]);
+    vi.mocked(feedsManager.addFeedWithoutMetadata).mockImplementation(async (url: string, title?: string) => ({
+      id: `feed-${title}`,
+      url,
+      title: title || url,
+      tags: [],
+    } as never));
+
+    const opmlText = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <body>
+    <outline>
+      <outline text="A" xmlUrl="https://a.com/rss" />
+      <outline text="B" xmlUrl="https://b.com/rss" />
+      <outline text="C" xmlUrl="https://c.com/rss" />
+    </outline>
+  </body>
+</opml>`;
+
+    const result = await opmlImportService.importFromText(opmlText);
+
+    const sortOrderByUrl = Object.fromEntries(
+      vi.mocked(feedsManager.addFeedWithoutMetadata).mock.calls.map(([url, , options]) => [url, options?.sortOrder]),
+    );
+    expect(sortOrderByUrl).toEqual({
+      'https://a.com/rss': 10,
+      'https://b.com/rss': 11,
+      'https://c.com/rss': 12,
+    });
+    // One read up front plus the unstationed reorder post-pass — not one per feed.
+    expect(feedsManager.getAllFeeds).toHaveBeenCalledTimes(2);
+    expect(result.createdFeeds.map((feed) => feed.id)).toEqual(['feed-A', 'feed-B', 'feed-C']);
+  });
+
+  it('resolves with the committed feeds when a station attach and post-pass read fail', async () => {
+    vi.mocked(feedsManager.getAllFeeds).mockResolvedValue([]);
+    vi.mocked(feedsManager.addFeedWithoutMetadata).mockImplementation(async (url: string, title?: string) => ({
+      id: `feed-${title}`,
+      url,
+      title: title || url,
+      tags: [],
+    } as never));
+    vi.mocked(feedsManager.updateFeed).mockResolvedValue(null);
+    vi.mocked(tagsManager.addTagToFeed)
+      .mockRejectedValueOnce(new Error('tag write failed'))
+      .mockResolvedValue(undefined);
+    // Initial snapshot succeeds; the post-pass membership read fails.
+    vi.mocked(tagsManager.getAllTags)
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('ipc closed'));
+
+    const opmlText = `<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <body>
+    <outline text="Tech">
+      <outline text="One" xmlUrl="https://one.com/rss" />
+      <outline text="Two" xmlUrl="https://two.com/rss" />
+    </outline>
+  </body>
+</opml>`;
+
+    const result = await opmlImportService.importFromText(opmlText);
+
+    expect(result.summary.imported).toBe(2);
+    expect(result.summary.partialFailures).toBe(1);
+    expect(result.importedFeeds).toHaveLength(2);
+    expect(result.createdFeeds).toHaveLength(2);
+    // Only the feed whose attach succeeded is published as stationed.
+    expect(result.createdFeeds.filter((feed) => feed.tags.includes('Tech'))).toHaveLength(1);
+    expect(tagsManager.reorderMembership).not.toHaveBeenCalled();
   });
 });

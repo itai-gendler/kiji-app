@@ -149,6 +149,8 @@ vi.mock("@/services/logger", () => ({
 }));
 
 import { feedScheduler } from "@/services/scheduler/feedSchedulerService";
+import * as feedStoreModule from "@/stores/feedStore";
+import { logger as mockedLogger } from "@/services/logger";
 import { resetNativeRefreshLockForTests } from "@/services/scheduler/nativeFeedRefresh";
 import { resetWakeDedupeForTests } from "@/services/scheduler/schedulerWakeDedupe";
 
@@ -1484,6 +1486,278 @@ describe("feedSchedulerService", () => {
 
     await vi.waitFor(() => {
       expect(previewNativeCycle).toHaveBeenCalled();
+    });
+  });
+
+  describe("robustness: reconfigure, cancellation, count sync", () => {
+    const CANCELLED_INVOKE_ERROR = JSON.stringify({
+      code: "FEED_REQUEST_CANCELLED",
+      message: "Feed request was cancelled.",
+    });
+    const nativeChangedResult = {
+      plan: { prioritized: [{ feedId: "feed-1", score: 1 }], skippedBackoffCount: 0, skippedSuppressedCount: 0 },
+      queuedCount: 1,
+      executedFeedCount: 1,
+      changedFeeds: 1,
+      notModifiedFeeds: 0,
+      failedFeeds: 0,
+      insertedArticles: 2,
+      feedResults: [{ feedId: "feed-1", status: "changed", insertedCount: 2 }],
+    };
+    type RecordedEvent = { type: string; cycleId?: number; updates?: unknown };
+
+    const recordEvents = () => {
+      const events: RecordedEvent[] = [];
+      const unsubscribe = feedScheduler.on((event) => {
+        events.push(event as RecordedEvent);
+      });
+      return { events, unsubscribe };
+    };
+
+    const failureWrites = () => vi.mocked(feedStoreModule.update).mock.calls.filter(
+      ([, patch]) => (patch as { consecutiveFailures?: number }).consecutiveFailures !== undefined
+        && (patch as { consecutiveFailures?: number }).consecutiveFailures !== 0,
+    );
+
+    afterEach(() => {
+      syncFeedCountsBatch.mockReset();
+      syncFeedCountsBatch.mockResolvedValue([]);
+      storeParsedFeedContent.mockReset();
+    });
+
+    it("ignores same-mode reconfigure while a native cycle runs (no cancel, no driver restart)", async () => {
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      let releaseCycle!: (value: unknown) => void;
+      previewNativeCycle.mockImplementation(() => new Promise((resolve) => {
+        releaseCycle = resolve;
+      }));
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(1);
+        });
+
+        schedulerReconfigure.mockClear();
+        // e.g. a theme / font change re-broadcasts settings with the same mode.
+        await feedScheduler.reconfigure("every-5m");
+
+        expect(schedulerReconfigure).not.toHaveBeenCalled();
+        expect(cancelNativeCycle).not.toHaveBeenCalled();
+
+        releaseCycle(nativeChangedResult);
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+        expect(events.some((event) => event.type === "feeds-batch-updated")).toBe(true);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("does not abort the legacy cycle signal on a same-mode reconfigure", async () => {
+      let cycleSignal: AbortSignal | undefined;
+      let releaseFetch!: () => void;
+      fetchFeedNetworkWithCache.mockImplementation((_url: string, options?: { signal?: AbortSignal }) => {
+        cycleSignal = options?.signal;
+        return new Promise((resolve) => {
+          releaseFetch = () => resolve({ notModified: true, etag: "etag-1", lastModified: "date-1" });
+        });
+      });
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(fetchFeedNetworkWithCache).toHaveBeenCalledTimes(1);
+        });
+
+        await feedScheduler.reconfigure("every-5m");
+        expect(cycleSignal?.aborted).toBe(false);
+
+        releaseFetch();
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("still cancels the cycle and reconfigures the driver on a real mode change", async () => {
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      let releaseCycle!: (value: unknown) => void;
+      previewNativeCycle.mockImplementation(() => new Promise((resolve) => {
+        releaseCycle = resolve;
+      }));
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(1);
+        });
+
+        schedulerReconfigure.mockClear();
+        await feedScheduler.reconfigure("every-15m");
+
+        expect(schedulerReconfigure).toHaveBeenCalledWith({ mode: "every-15m" });
+        expect(cancelNativeCycle).toHaveBeenCalledWith({
+          cycleId: expect.stringMatching(/^native-\d+$/),
+        });
+
+        releaseCycle(nativeChangedResult);
+        // The mode change starts a new lifecycle: the old cycle is superseded
+        // and never reports cycle-complete.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(events.some((event) => event.type === "cycle-complete")).toBe(false);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("does not skip reconfigure after stop() or a failed driver start", async () => {
+      await feedScheduler.start();
+      await feedScheduler.stop();
+      schedulerReconfigure.mockClear();
+      await feedScheduler.reconfigure("every-5m");
+      expect(schedulerReconfigure).toHaveBeenCalledWith({ mode: "every-5m" });
+
+      await feedScheduler.stop();
+      schedulerStart.mockRejectedValueOnce(new Error("driver failed"));
+      await feedScheduler.start();
+      schedulerReconfigure.mockClear();
+      await feedScheduler.reconfigure("every-5m");
+      expect(schedulerReconfigure).toHaveBeenCalledWith({ mode: "every-5m" });
+    });
+
+    it("does not record a failure when an aborted legacy fetch rejects with FEED_REQUEST_CANCELLED", async () => {
+      fetchFeedNetworkWithCache.mockImplementation((_url: string, options?: { signal?: AbortSignal }) => (
+        new Promise((_resolve, reject) => {
+          // Mirrors Tauri: aborting cancels the Rust request, which rejects
+          // with the raw structured command-error string, not an AbortError.
+          options?.signal?.addEventListener("abort", () => reject(CANCELLED_INVOKE_ERROR), { once: true });
+        })
+      ));
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(fetchFeedNetworkWithCache).toHaveBeenCalledTimes(1);
+        });
+
+        feedScheduler.pauseForStationSelection();
+        fetchFeedNetworkWithCache.mockResolvedValue({ notModified: true, etag: "etag-1", lastModified: "date-1" });
+        feedScheduler.resumeAfterStationSelection();
+
+        // The deferred follow-up only starts after the aborted cycle drained.
+        await vi.waitFor(() => {
+          expect(getAll).toHaveBeenCalledTimes(2);
+        });
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+
+        expect(failureWrites()).toEqual([]);
+        expect(events.some((event) => event.type === "feed-failed")).toBe(false);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("does not record a failure for a FEED_REQUEST_CANCELLED rejection", async () => {
+      fetchFeedNetworkWithCache.mockRejectedValue(CANCELLED_INVOKE_ERROR);
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+
+        expect(failureWrites()).toEqual([]);
+        expect(events.some((event) => event.type === "feed-failed")).toBe(false);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("still emits feeds-batch-updated and skips resume catch-up when native count sync fails", async () => {
+      getE2eConfig.mockReturnValue(null);
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      previewNativeCycle.mockResolvedValue(nativeChangedResult);
+      syncFeedCountsBatch.mockRejectedValue(new Error("count sync failed"));
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+
+        const batchEvent = events.find((event) => event.type === "feeds-batch-updated");
+        expect(batchEvent?.updates).toEqual([{ feedId: "feed-1", newArticleCount: 2 }]);
+        expect(syncFeedCountsBatch).toHaveBeenCalledWith(["feed-1"]);
+        expect(publishFeedsCountsUpdated).not.toHaveBeenCalled();
+        expect(mockedLogger.warn).toHaveBeenCalledWith(
+          "Scheduler",
+          "Failed to sync feed counts after refresh cycle",
+          expect.objectContaining({ feedCount: 1 }),
+        );
+
+        // Cycle succeeded (changed feed), so focus/resume must not trigger a
+        // needsResumeCatchUp full catch-up within the interval.
+        previewNativeCycle.mockClear();
+        await feedScheduler.catchUpAfterResume();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(previewNativeCycle).not.toHaveBeenCalled();
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("records the legacy cycle outcome when count sync fails after inserts", async () => {
+      getE2eConfig.mockReturnValue(null);
+      fetchFeedNetworkWithCache.mockResolvedValue({
+        notModified: false,
+        data: "<rss></rss>",
+        etag: "etag-2",
+        lastModified: "date-2",
+      });
+      storeParsedFeedContent.mockResolvedValue({ insertedCount: 1, articles: [], updateFrequencyScore: 0.5 });
+      syncFeedCountsBatch.mockRejectedValue(new Error("count sync failed"));
+      const { events, unsubscribe } = recordEvents();
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.some((event) => event.type === "cycle-complete")).toBe(true);
+        });
+
+        expect(syncFeedCountsBatch).toHaveBeenCalledWith(["feed-1"]);
+        expect(events.some((event) => event.type === "feed-updated")).toBe(true);
+        expect(mockedLogger.error).not.toHaveBeenCalledWith(
+          "Scheduler",
+          "Background refresh cycle failed",
+          expect.anything(),
+        );
+
+        getAll.mockClear();
+        await feedScheduler.catchUpAfterResume();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(getAll).not.toHaveBeenCalled();
+      } finally {
+        unsubscribe();
+      }
     });
   });
 });

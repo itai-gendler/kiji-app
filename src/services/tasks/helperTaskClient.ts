@@ -1,6 +1,7 @@
 import type {
   HelperTaskAddRequest,
   HelperTaskAddResponse,
+  HelperTaskClearRequest,
   HelperTaskClearResponse,
   HelperTaskKind,
   HelperTaskQueueSizeSnapshot,
@@ -91,8 +92,13 @@ class HelperTaskClient {
     return helperTaskRemove({ taskId });
   }
 
-  async clearTasks(): Promise<HelperTaskClearResponse> {
-    return helperTaskClear();
+  /**
+   * Cancel this renderer's queued and running tasks. Pass `kinds` to limit the
+   * sweep to one workflow; every removed task settles as `cancelled`, so
+   * `runTask` callers reject with 'Task cancelled' instead of hanging.
+   */
+  async clearTasks(request?: HelperTaskClearRequest): Promise<HelperTaskClearResponse> {
+    return helperTaskClear(request);
   }
 
   async getQueueSnapshot(): Promise<HelperTaskQueueSizeSnapshot> {

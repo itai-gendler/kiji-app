@@ -21,6 +21,19 @@ pub struct LibrarySidebarSnapshot {
     pub stations: Vec<TagRecord>,
 }
 
+/// Deserializes a "patch" field so JSON can distinguish "no change" from "clear":
+/// absent key -> `None` (requires `#[serde(default)]`), `null` -> `Some(None)`,
+/// value -> `Some(Some(value))`. Plain `Option<Option<T>>` collapses `null` to `None`.
+pub(crate) fn deserialize_double_option<'de, T, D>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedUpdate {
@@ -29,16 +42,23 @@ pub struct FeedUpdate {
     pub created_at: Option<String>,
     pub description: Option<Option<String>>,
     pub last_fetched: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub last_failed_fetch_at: Option<Option<String>>,
     pub unread_count: Option<i64>,
     pub article_count: Option<i64>,
     pub tags: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub favicon: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub favicon_has_transparency: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub favicon_dominant_color: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub favicon_bg_light: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub favicon_bg_dark: Option<Option<String>>,
     pub favicon_fetch_failed: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub emoji: Option<Option<String>>,
     pub image: Option<Option<String>>,
     pub categories: Option<Vec<String>>,
@@ -754,5 +774,101 @@ mod tests {
         let connection = setup_connection();
         let deleted = delete_feeds_with_articles(&connection, &[]).expect("empty batch delete");
         assert_eq!(deleted, 0);
+    }
+
+    fn parse_update(json: &str) -> FeedUpdate {
+        serde_json::from_str(json).expect("deserialize FeedUpdate")
+    }
+
+    #[test]
+    fn feed_update_clearable_fields_distinguish_absent_null_and_value() {
+        assert_eq!(parse_update(r#"{"emoji":null}"#).emoji, Some(None));
+        assert_eq!(parse_update(r#"{}"#).emoji, None);
+        assert_eq!(
+            parse_update(r#"{"emoji":"x"}"#).emoji,
+            Some(Some("x".to_string()))
+        );
+
+        let cleared = parse_update(
+            r#"{"favicon":null,"faviconHasTransparency":null,"faviconDominantColor":null,
+                "faviconBgLight":null,"faviconBgDark":null,"lastFailedFetchAt":null}"#,
+        );
+        assert_eq!(cleared.favicon, Some(None));
+        assert_eq!(cleared.favicon_has_transparency, Some(None));
+        assert_eq!(cleared.favicon_dominant_color, Some(None));
+        assert_eq!(cleared.favicon_bg_light, Some(None));
+        assert_eq!(cleared.favicon_bg_dark, Some(None));
+        assert_eq!(cleared.last_failed_fetch_at, Some(None));
+    }
+
+    #[test]
+    fn feed_update_null_still_means_unchanged_for_validator_fields() {
+        // Callers pass `etag: networkResult.etag` where undefined means "unchanged";
+        // a JSON null must not clear the stored validator.
+        let update = parse_update(r#"{"etag":null,"lastModifiedHeader":null}"#);
+        assert_eq!(update.etag, None);
+        assert_eq!(update.last_modified_header, None);
+    }
+
+    #[test]
+    fn update_feed_json_null_clears_favicon_and_emoji_columns() {
+        let connection = setup_connection();
+        insert_feed(&connection, "f1");
+        update_feed(
+            &connection,
+            "f1",
+            parse_update(
+                r#"{"favicon":"data:image/png;base64,AA","faviconHasTransparency":true,
+                    "faviconDominantColor":"red","faviconBgLight":"white","faviconBgDark":"black",
+                    "emoji":"x","lastFailedFetchAt":"2026-01-02T00:00:00Z","etag":"\"v1\""}"#,
+            ),
+        )
+        .expect("seed feed fields");
+
+        update_feed(
+            &connection,
+            "f1",
+            parse_update(
+                r#"{"favicon":null,"faviconHasTransparency":null,"faviconDominantColor":null,
+                    "faviconBgLight":null,"faviconBgDark":null,"emoji":null,
+                    "lastFailedFetchAt":null,"etag":null}"#,
+            ),
+        )
+        .expect("clear feed fields");
+
+        type Row = (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Row = connection
+            .query_row(
+                "SELECT favicon, favicon_has_transparency, favicon_dominant_color, favicon_bg_light,
+                        favicon_bg_dark, emoji, last_failed_fetch_at, etag
+                 FROM feeds WHERE id = 'f1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("read feed row");
+        assert_eq!(
+            row,
+            (None, None, None, None, None, None, None, Some("\"v1\"".to_string()))
+        );
     }
 }

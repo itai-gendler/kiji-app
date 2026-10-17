@@ -1,4 +1,3 @@
-import { feedsManager, type Feed } from '@/services/feeds/feedsManager';
 import { assertValidOpmlText } from '@/services/feeds/opmlDocument';
 import type { OpmlImportResult, OpmlImportSummary, ParseOpmlEntriesOptions } from '@/services/feeds/opmlImportService';
 import { opmlWorkflowService } from '@/services/feeds/opmlWorkflowService';
@@ -37,7 +36,13 @@ export const formatOpmlImportSummary = (summary: OpmlImportSummary): string => {
     return 'No feed entries found in OPML file.';
   }
 
-  return `Imported ${pluralizeFeeds(summary.imported)}. Skipped ${summary.skippedDuplicate} duplicates, ${summary.invalid} invalid, ${summary.failed} failed.`;
+  const base = `Imported ${pluralizeFeeds(summary.imported)}. Skipped ${summary.skippedDuplicate} duplicates, ${summary.invalid} invalid, ${summary.failed} failed.`;
+  const partialFailures = summary.partialFailures ?? 0;
+  if (partialFailures === 0) {
+    return base;
+  }
+
+  return `${base} ${partialFailures} station or emoji update${partialFailures === 1 ? '' : 's'} failed.`;
 };
 
 export interface OpmlImportNavigationActions {
@@ -87,12 +92,10 @@ export const applyOpmlImportResultToLibrary = async (
     notifyFeedLibraryChanged,
   }: ApplyOpmlImportResultOptions
 ): Promise<void> => {
-  const importedFeeds = (
-    await Promise.all(importResult.importedFeeds.map(({ id }) => feedsManager.getFeedById(id)))
-  ).filter((feed): feed is Feed => feed !== null);
-
-  if (importedFeeds.length > 0) {
-    feedLibraryMutationBus.publishFeedsAdded(importedFeeds);
+  // Publish the rows the import already holds; re-reading each imported feed
+  // would be one full-row IPC per feed, all concurrent.
+  if (importResult.createdFeeds.length > 0) {
+    feedLibraryMutationBus.publishFeedsAdded(importResult.createdFeeds);
   }
 
   await hydrateLibraryAfterImport();

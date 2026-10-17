@@ -2389,10 +2389,19 @@ export const FeedEditView: React.FC<FeedEditViewProps> = ({ layout: _layout = '2
         }
       }
 
-      await tagsManager.deleteTag(targetStationName);
+      // Feeds above are committed as deleted. A station delete failure must
+      // still publish those deletions (sidebar rows, metadata cache) before
+      // reporting; the station itself stays, minus the deleted feeds.
+      let stationDeleteError: unknown = null;
+      try {
+        await tagsManager.deleteTag(targetStationName);
+      } catch (error) {
+        stationDeleteError = error;
+      }
+      const stationDeleted = stationDeleteError === null;
 
       setStations((current) => current
-        .filter((station) => station.name !== targetStationName)
+        .filter((station) => !stationDeleted || station.name !== targetStationName)
         .map((station) => ({
           ...station,
           feedIds: station.feedIds.filter((feedId) => !deletedFeedIdSet.has(feedId)),
@@ -2400,7 +2409,7 @@ export const FeedEditView: React.FC<FeedEditViewProps> = ({ layout: _layout = '2
       setFeeds((current) => current
         .filter((feed) => !deletedFeedIdSet.has(feed.id))
         .map((feed) => {
-          if (!feed.tags.includes(targetStationName)) {
+          if (!stationDeleted || !feed.tags.includes(targetStationName)) {
             return feed;
           }
 
@@ -2416,7 +2425,7 @@ export const FeedEditView: React.FC<FeedEditViewProps> = ({ layout: _layout = '2
           next.delete(feedId);
         }
 
-        for (const feedId of feedsToUnlink) {
+        for (const feedId of stationDeleted ? feedsToUnlink : []) {
           const stationNames = next.get(feedId);
           if (!stationNames) continue;
 
@@ -2462,6 +2471,19 @@ export const FeedEditView: React.FC<FeedEditViewProps> = ({ layout: _layout = '2
         }
 
         feedLibraryMutationBus.publishFeedDeleted(feedId);
+      }
+
+      if (!stationDeleted) {
+        if (deletedStation && feedsToDelete.length > 0) {
+          feedLibraryMutationBus.publishStationPatched(deletedStation.name, {
+            name: deletedStation.name,
+            emoji: deletedStation.emoji,
+            createdAt: deletedStation.createdAt,
+            sortOrder: deletedStation.sortOrder,
+            feedIds: deletedStation.feedIds.filter((feedId) => !deletedFeedIdSet.has(feedId)),
+          });
+        }
+        throw stationDeleteError;
       }
 
       if (stationNameEditState?.stationName === targetStationName) {

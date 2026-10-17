@@ -4,6 +4,7 @@ import {
   type HelperTaskAddResponse,
   type HelperTaskAnyResult,
   type HelperTaskCancelledEvent,
+  type HelperTaskClearRequest,
   type HelperTaskClearResponse,
   type HelperTaskCompletedEvent,
   type HelperTaskFailedEvent,
@@ -113,16 +114,24 @@ export class HelperTaskServer {
     return { removed: true };
   }
 
-  async clearTasks(ownerId: number): Promise<HelperTaskClearResponse> {
-    let cleared = 0;
+  async clearTasks(
+    ownerId: number,
+    request: HelperTaskClearRequest = {},
+  ): Promise<HelperTaskClearResponse> {
+    const kindFilter = request.kinds ? new Set(request.kinds) : null;
+    const matches = (task: PendingTask): boolean => (
+      task.ownerId === ownerId
+      && (kindFilter === null || kindFilter.has(task.request.kind))
+    );
+    const removedPending: PendingTask[] = [];
 
     for (const priority of HELPER_TASK_PRIORITIES) {
       const queue = this.pendingByPriority[priority];
       const retained: PendingTask[] = [];
 
       for (const pendingTask of queue) {
-        if (pendingTask.ownerId === ownerId) {
-          cleared += 1;
+        if (matches(pendingTask)) {
+          removedPending.push(pendingTask);
           continue;
         }
 
@@ -132,11 +141,20 @@ export class HelperTaskServer {
       this.pendingByPriority[priority] = retained;
     }
 
+    let cleared = removedPending.length;
     for (const runningTask of this.runningByTaskId.values()) {
-      if (runningTask.ownerId !== ownerId) continue;
+      if (!matches(runningTask)) continue;
+      // Running tasks settle as `cancelled` from runTask once the backend unwinds.
       runningTask.abortController.abort();
       void this.backend.cancel(runningTask.taskId);
       cleared += 1;
+    }
+
+    // Removed pending tasks never reach runTask, so settle them here: callers
+    // awaiting a result (helperTaskClient.runTask) would otherwise wait forever.
+    // Queues are already updated, so listeners see a consistent snapshot.
+    for (const pendingTask of removedPending) {
+      this.emitCancelled(pendingTask);
     }
 
     return { cleared };
@@ -254,12 +272,12 @@ export class HelperTaskServer {
     this.onTaskSettled(task.ownerId, event);
   }
 
-  private emitCancelled(task: RunningTask): void {
+  private emitCancelled(task: PendingTask | RunningTask): void {
     const event: HelperTaskCancelledEvent = {
       taskId: task.taskId,
       kind: task.request.kind,
       priority: task.request.priority,
-      durationMs: Date.now() - task.startedAt,
+      durationMs: 'startedAt' in task ? Date.now() - task.startedAt : 0,
       status: 'cancelled',
     };
 

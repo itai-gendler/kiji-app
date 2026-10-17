@@ -135,6 +135,62 @@ describe("opmlWorkflowService", () => {
     expect(showIndicator).toHaveBeenCalledWith("Import feeds failed", { durationMs: 6000 });
   });
 
+  it("clears only favicon tasks and ignores their cancel events on re-import", async () => {
+    const flushAll = async () => {
+      for (let index = 0; index < 5; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    const enqueuedTaskIds: string[] = [];
+    addTask.mockImplementation(async () => {
+      const taskId = `fav-${enqueuedTaskIds.length}`;
+      enqueuedTaskIds.push(taskId);
+      return { taskId };
+    });
+
+    // First import queues favicon tasks for feed-a / feed-b.
+    await opmlWorkflowService.importFromOpmlText("<opml></opml>");
+    await flushAll();
+    expect(enqueuedTaskIds.length).toBeGreaterThan(0);
+    applyFaviconResult.mockClear();
+
+    // The real server settles each removed pending task as `cancelled`
+    // synchronously inside clearTasks.
+    clearTasks.mockImplementation(async () => {
+      for (const taskId of enqueuedTaskIds.splice(0)) {
+        taskResultHarness.listener?.({ kind: "favicon-fetch", taskId, status: "cancelled" });
+      }
+      return { cleared: 2 };
+    });
+
+    await opmlWorkflowService.importFromOpmlText("<opml></opml>");
+    await flushAll();
+
+    expect(clearTasks).toHaveBeenLastCalledWith({ kinds: ["favicon-fetch"] });
+    expect(applyFaviconResult).not.toHaveBeenCalled();
+  });
+
+  it("logs instead of leaking a rejection when favicon result handling fails", async () => {
+    addTask.mockResolvedValueOnce({ taskId: "fav-fail" });
+    importEntries.mockResolvedValueOnce({
+      importedFeeds: [{ id: "feed-x", url: "https://example.com/x.xml" }],
+      createdFeeds: [],
+      summary: { total: 1, imported: 1, skippedDuplicate: 0, invalid: 0, failed: 0, partialFailures: 0 },
+    });
+    await opmlWorkflowService.importFromOpmlText("<opml></opml>");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    applyFaviconResult.mockRejectedValueOnce(new Error("db closed"));
+
+    taskResultHarness.listener?.({ kind: "favicon-fetch", taskId: "fav-fail", status: "failed", error: "x" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(warn).toHaveBeenCalledWith(
+      "OpmlWorkflow",
+      "Favicon task result handling failed",
+      expect.objectContaining({ taskId: "fav-fail" }),
+    );
+  });
+
   describe("station favicon catch-up", () => {
     const flush = async () => {
       for (let index = 0; index < 5; index += 1) {

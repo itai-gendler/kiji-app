@@ -215,10 +215,12 @@ export async function updateFeedMeta(
   meta: {
     feedUrl?: string;
     feedTitle?: string;
-    feedFavicon?: string;
-    feedFaviconHasTransparency?: boolean;
-    feedFaviconBgLight?: string;
-    feedFaviconBgDark?: string;
+    // `null` clears the column; an omitted/undefined key leaves it unchanged
+    // (JSON.stringify drops undefined keys before they reach Rust).
+    feedFavicon?: string | null;
+    feedFaviconHasTransparency?: boolean | null;
+    feedFaviconBgLight?: string | null;
+    feedFaviconBgDark?: string | null;
     feedImage?: string;
   },
 ): Promise<void> {

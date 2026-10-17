@@ -33,7 +33,13 @@ pub fn get_feed_failure_backoff_ms(failures: i64, update_frequency_score: f64) -
     }
 
     let max_ms = get_feed_failure_backoff_max_ms(update_frequency_score);
-    let exponential = FEED_FAILURE_BACKOFF_BASE_MS * 2_i64.pow((failures - 1) as u32);
+    // Checked math: large failure counts would overflow the exponential and
+    // wrap to a non-positive backoff, so treat overflow as "at the cap".
+    let exponent = u32::try_from(failures - 1).unwrap_or(u32::MAX);
+    let exponential = 2_i64
+        .checked_pow(exponent)
+        .and_then(|factor| FEED_FAILURE_BACKOFF_BASE_MS.checked_mul(factor))
+        .unwrap_or(max_ms);
     exponential.min(max_ms)
 }
 
@@ -130,5 +136,15 @@ mod tests {
             };
 
         assert!(!is_scheduler_entry_in_backoff(&active, now));
+    }
+
+    #[test]
+    fn backoff_saturates_at_cap_for_huge_failure_counts() {
+        for score in [1.0, 0.75, 0.5] {
+            let max_ms = get_feed_failure_backoff_max_ms(score);
+            for failures in [46, 64, 1000, i64::MAX] {
+                assert_eq!(get_feed_failure_backoff_ms(failures, score), max_ms);
+            }
+        }
     }
 }

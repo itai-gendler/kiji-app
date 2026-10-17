@@ -7,7 +7,7 @@ use crate::scheduler::run_plan::{
     boosts_to_map, create_scheduler_run_plan, scheduler_feed_entry_from_scheduler_row,
 };
 use crate::scheduler::types::{
-    SchedulerNativeCycleCompletePayload, SchedulerNativeCycleFeedPayload,
+    FeedPriorityEntry, SchedulerNativeCycleCompletePayload, SchedulerNativeCycleFeedPayload,
     SchedulerNativeCycleFeedResult, SchedulerNativeCyclePreviewRequest,
     SchedulerNativeCyclePreviewResponse, SchedulerNativeCycleStartPayload,
     SCHEDULER_NATIVE_CYCLE_COMPLETE_EVENT, SCHEDULER_NATIVE_CYCLE_FEED_EVENT,
@@ -196,11 +196,11 @@ pub async fn preview_native_refresh_cycle(
                 .read(move |connection| get_feeds_by_ids(connection, &chunk_ids))
                 .await?;
 
-            let chunk_futures = chunk.iter().map(|entry| {
-                let feed = feeds_by_id
-                    .get(&entry.entry.feed_id)
-                    .cloned()
-                    .ok_or_else(|| format!("Feed not found: {}", entry.entry.feed_id))?;
+            // Feeds deleted between planning and execution are skipped so one
+            // missing row cannot abort the rest of the cycle.
+            let chunk_feeds = resolve_chunk_feeds(chunk, &feeds_by_id);
+            let chunk_tasks = chunk_feeds.iter().map(|(_, feed)| {
+                let feed = feed.clone();
                 let force_refresh = force_refresh_feed_ids.contains(&feed.id);
                 let request_id = cycle_id
                     .as_ref()
@@ -210,13 +210,11 @@ pub async fn preview_native_refresh_cycle(
                         register_request_id(cid, rid);
                     }
                 }
-                Ok(refresh_single_feed_native(db, feed, force_refresh, request_id))
+                refresh_single_feed_native(db, feed, force_refresh, request_id)
             });
-            let chunk_tasks: Result<Vec<_>, String> = chunk_futures.collect();
-            let chunk_tasks = chunk_tasks?;
 
             let chunk_results = join_all(chunk_tasks).await;
-            for (entry, result) in chunk.iter().zip(chunk_results) {
+            for ((entry, _), result) in chunk_feeds.iter().zip(chunk_results) {
                 let request_id = cycle_id
                     .as_ref()
                     .map(|cid| format!("{}:{}", cid, entry.entry.feed_id));
@@ -325,7 +323,11 @@ async fn refresh_single_feed_native(
     {
         Ok(response) => response,
         Err(error) => {
-            record_feed_failure(db, &feed, &error).await?;
+            // A cycle cancel aborts in-flight requests; that is not a feed
+            // failure and must not push a healthy feed into backoff.
+            if should_record_feed_failure(&error) {
+                record_feed_failure(db, &feed, &error).await?;
+            }
             return Err(error);
         }
     };
@@ -378,6 +380,36 @@ async fn refresh_single_feed_native(
         status: "changed".to_string(),
         inserted_count: Some(stored.inserted_count),
     })
+}
+
+/// Pairs each planned entry with its current feed row, dropping entries whose
+/// feed no longer exists.
+fn resolve_chunk_feeds<'a>(
+    chunk: &'a [FeedPriorityEntry],
+    feeds_by_id: &HashMap<String, FeedRecord>,
+) -> Vec<(&'a FeedPriorityEntry, FeedRecord)> {
+    chunk
+        .iter()
+        .filter_map(|entry| match feeds_by_id.get(&entry.entry.feed_id) {
+            Some(feed) => Some((entry, feed.clone())),
+            None => {
+                eprintln!(
+                    "[Scheduler] Skipping feed missing at execution time: {}",
+                    entry.entry.feed_id
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+/// Fetch errors are `FeedCommandError` JSON; a `FEED_REQUEST_CANCELLED` code
+/// means the cycle was cancelled, not that the feed failed.
+fn should_record_feed_failure(error: &str) -> bool {
+    let code = serde_json::from_str::<serde_json::Value>(error)
+        .ok()
+        .and_then(|value| value.get("code")?.as_str().map(str::to_string));
+    code.as_deref() != Some("FEED_REQUEST_CANCELLED")
 }
 
 async fn record_feed_failure(db: &DbState, feed: &FeedRecord, error: &str) -> Result<(), String> {
@@ -575,5 +607,58 @@ mod tests {
         assert_eq!(entry.consecutive_failures, 2);
         assert!(entry.last_fetched_ms.is_some());
         assert!(entry.last_failed_fetch_at_ms.is_none());
+    }
+
+    #[test]
+    fn cancelled_fetch_does_not_record_feed_failure() {
+        let cancelled = r#"{"code":"FEED_REQUEST_CANCELLED","message":"Feed request was cancelled."}"#;
+        assert!(!should_record_feed_failure(cancelled));
+    }
+
+    #[test]
+    fn other_fetch_errors_record_feed_failure() {
+        let http = r#"{"code":"FEED_HTTP_STATUS","message":"HTTP request failed with status 404 Not Found.","httpStatus":404}"#;
+        assert!(should_record_feed_failure(http));
+        assert!(should_record_feed_failure("Feed request was cancelled."));
+        assert!(should_record_feed_failure(""));
+    }
+
+    fn priority_entry(feed_id: &str) -> FeedPriorityEntry {
+        let row = SchedulerFeedRow {
+            id: feed_id.to_string(),
+            title: "Title".to_string(),
+            url: "https://example.com/rss".to_string(),
+            last_fetched: None,
+            last_failed_fetch_at: None,
+            sort_order: 0,
+            update_frequency_score: 0.0,
+            consecutive_failures: 0,
+        };
+        FeedPriorityEntry {
+            entry: scheduler_feed_entry_from_scheduler_row(&row),
+            score: 0.0,
+        }
+    }
+
+    #[test]
+    fn resolve_chunk_feeds_skips_feeds_deleted_after_planning() {
+        let chunk = vec![
+            priority_entry("feed-1"),
+            priority_entry("deleted"),
+            priority_entry("feed-3"),
+        ];
+        let mut feeds_by_id = HashMap::new();
+        for id in ["feed-1", "feed-3"] {
+            let mut feed = feed_with_headers(None, None);
+            feed.id = id.to_string();
+            feeds_by_id.insert(id.to_string(), feed);
+        }
+
+        let resolved = resolve_chunk_feeds(&chunk, &feeds_by_id);
+        let ids: Vec<_> = resolved
+            .iter()
+            .map(|(entry, feed)| (entry.entry.feed_id.as_str(), feed.id.as_str()))
+            .collect();
+        assert_eq!(ids, vec![("feed-1", "feed-1"), ("feed-3", "feed-3")]);
     }
 }

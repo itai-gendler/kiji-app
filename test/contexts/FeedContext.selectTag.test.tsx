@@ -1904,4 +1904,55 @@ describe('FeedContext selectTag', () => {
       });
     });
   });
+
+  describe('occluded window (rAF never fires)', () => {
+    beforeEach(() => {
+      (isNativeFeedIngestionEnabled as unknown as Mock).mockReturnValue(true);
+      (tagsManager.getFeedsByTag as vi.Mock).mockResolvedValue(['feed-news']);
+      (feedStore.getAll as vi.Mock).mockResolvedValue([stationFeed('feed-news')]);
+      vi.spyOn(nativeFeedRefresh, 'runNativeFeedRefresh').mockResolvedValue({
+        insertedArticles: 0,
+        feedResults: [],
+        insertedByFeedId: new Map(),
+      });
+      vi.stubGlobal('requestAnimationFrame', () => 1);
+      vi.stubGlobal('cancelAnimationFrame', () => {});
+    });
+
+    afterEach(() => {
+      (isNativeFeedIngestionEnabled as unknown as Mock).mockReturnValue(false);
+      vi.mocked(nativeFeedRefresh.runNativeFeedRefresh).mockRestore();
+    });
+
+    it('still runs the station network refresh when frames are suspended', async () => {
+      act(() => {
+        root.render(
+          <FeedProvider>
+            <Probe />
+          </FeedProvider>
+        );
+      });
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+
+      await act(async () => {
+        void latestContext!.selectTag('News');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.selectedTag).toBe('News');
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      }, 3000);
+
+      // Same-station re-click runs the foreground native refresh; its UI-budget
+      // frame yield must not wait on a frame that never comes.
+      await act(async () => {
+        void latestContext!.selectTag('News');
+      });
+
+      await waitForExpectation(() => {
+        expect(nativeFeedRefresh.runNativeFeedRefresh).toHaveBeenCalledWith(expect.objectContaining({
+          feedIds: ['feed-news'],
+        }));
+      }, 3000);
+    });
+  });
 });

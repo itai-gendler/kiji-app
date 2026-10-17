@@ -8,6 +8,18 @@
 - Rare database or connection hiccups while switching stations, opening smart views, syncing in the background or leaving a search no longer leave errors in the log; the list retries on your next scroll or interaction.
 - Opening a station no longer re-reads every feed in it just to look for missing icons.
 - Adding a feed no longer reports a failure when the feed was added but its first articles or icon could not be saved; KiJi opens the new feed and loads its articles.
+- Switching stations while feeds sync in the background no longer marks healthy feeds as failing, so they keep refreshing on schedule.
+- A feed that has been failing for a long time no longer starts being retried on every refresh.
+- Removing a feed while a refresh is running no longer stops the rest of the library from refreshing.
+- Feeds whose items have no link or ID no longer show the same article again after every refresh.
+- Changing a theme, font or other setting no longer interrupts or restarts background refresh.
+- Importing an OPML file while a saved-articles import is running no longer leaves that import stuck.
+- Large OPML imports are faster, and a problem assigning one station no longer reports the whole import as failed.
+- Importing a saved-articles ZIP now keeps the right text for articles that share a title, such as "Untitled".
+- Holding j or k while opening an article or a dialog no longer keeps moving through the list behind it.
+- Saving an article and quickly opening another no longer shows the first article in the new view.
+- Clearing all feeds or deleting a station with its feeds now updates the sidebar even if part of the cleanup fails.
+- Choosing a feed or station while KiJi's window is behind other windows (or when KiJi reopens your last selection in the background) now refreshes it right away, instead of pausing background updates for up to 10 minutes.
 
 ## [1.5.0] - 2026-10-16
 

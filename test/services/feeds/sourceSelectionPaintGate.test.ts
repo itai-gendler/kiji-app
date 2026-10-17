@@ -130,4 +130,60 @@ describe('sourceSelectionPaintGate', () => {
 
     await expect(painted).resolves.toBe(true);
   });
+
+  describe('when the window never paints (rAF suspended)', () => {
+    const rafCallbacks: FrameRequestCallback[] = [];
+
+    beforeEach(() => {
+      rafCallbacks.length = 0;
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+        rafCallbacks.push(callback);
+        return rafCallbacks.length;
+      });
+    });
+
+    it('still requests the network refresh after the wall-clock budget', async () => {
+      const onRefreshRequested = vi.fn();
+      const payload = createFeedPayload(1);
+
+      scheduleSourceRefreshAfterPaint(payload, {
+        isSelectionActive: () => true,
+        onRefreshRequested,
+      });
+
+      await vi.advanceTimersByTimeAsync(SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS * 2 + SOURCE_SELECTION_REFRESH_DEBOUNCE_MS);
+
+      expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+      expect(onRefreshRequested).toHaveBeenCalledWith(payload);
+    });
+
+    it('starts the gate once when the frame arrives after the fallback fired', async () => {
+      const onRefreshRequested = vi.fn();
+
+      scheduleSourceRefreshAfterPaint(createFeedPayload(1), {
+        isSelectionActive: () => true,
+        onRefreshRequested,
+      });
+
+      await vi.advanceTimersByTimeAsync(SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS * 2 + SOURCE_SELECTION_REFRESH_DEBOUNCE_MS);
+      // A late frame for the first scheduling must not start a second gate.
+      rafCallbacks[0]?.(0);
+      await vi.runAllTimersAsync();
+
+      expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the fallback when the selection schedule is cancelled', async () => {
+      const onRefreshRequested = vi.fn();
+
+      scheduleSourceRefreshAfterPaint(createFeedPayload(1), {
+        isSelectionActive: () => true,
+        onRefreshRequested,
+      });
+      cancelSourceSelectionRefreshSchedule();
+      await vi.runAllTimersAsync();
+
+      expect(onRefreshRequested).not.toHaveBeenCalled();
+    });
+  });
 });

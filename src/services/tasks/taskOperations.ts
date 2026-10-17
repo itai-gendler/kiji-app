@@ -307,6 +307,56 @@ const exportSavedArticlesTask = async (
   return { zipArrayBuffer: zipBuffer };
 };
 
+// Mirrors src-tauri/src/saved/export_format.rs (normalize_title, sanitize_filename,
+// create_saved_article_markdown_file_name) so the importer resolves the same
+// `articles/<name>.md` the desktop exporter wrote. Rust measures `len()` in UTF-8
+// bytes but truncates by chars, and `is_control()` covers C0 and C1 controls.
+const RUST_EXPORT_DEFAULT_TITLE = 'Untitled';
+const RUST_EXPORT_MAX_TITLE_LENGTH = 180;
+const RUST_EXPORT_MAX_FILENAME_LENGTH = 180;
+const RUST_EXPORT_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).length;
+const takeChars = (value: string, count: number): string => Array.from(value).slice(0, count).join('');
+
+const rustNormalizeTitle = (title: string): string => {
+  const collapsed = title.trim().split(/\s+/).filter(Boolean).join(' ');
+  if (utf8ByteLength(collapsed) <= RUST_EXPORT_MAX_TITLE_LENGTH) {
+    return collapsed;
+  }
+
+  return `${takeChars(collapsed, RUST_EXPORT_MAX_TITLE_LENGTH - 3).trimEnd()}...`;
+};
+
+const rustSanitizeFilename = (name: string): string => {
+  let sanitized = rustNormalizeTitle(name).replace(/[<>:"/\\|?*]/g, '_');
+  sanitized = sanitized.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+  sanitized = sanitized.trim().replace(/\.+$/, '');
+
+  if (RUST_EXPORT_RESERVED_NAMES.has(sanitized.toUpperCase())) {
+    sanitized = `${sanitized}_file`;
+  }
+
+  if (utf8ByteLength(sanitized) > RUST_EXPORT_MAX_FILENAME_LENGTH) {
+    sanitized = takeChars(sanitized, RUST_EXPORT_MAX_FILENAME_LENGTH).trimEnd().replace(/\.+$/, '');
+  }
+
+  return sanitized.length > 0 ? sanitized : RUST_EXPORT_DEFAULT_TITLE.toLowerCase();
+};
+
+/** Exporter: `base.md`, then `base-2.md`, `base-3.md`, … in export (= CSV row) order. */
+const nextExportedMarkdownFileName = (title: string, usedNames: Map<string, number>): string => {
+  // CSV titles are already `normalize_title` output; the exporter derives the base
+  // from that same string.
+  const baseName = rustSanitizeFilename(title);
+  const count = (usedNames.get(baseName) ?? 0) + 1;
+  usedNames.set(baseName, count);
+  return count === 1 ? `${baseName}.md` : `${baseName}-${count}.md`;
+};
+
 const importSavedArticlesTask = async (
   payload: SavedArticlesImportTaskPayload,
 ): Promise<SavedArticlesImportTaskResult> => {
@@ -322,9 +372,14 @@ const importSavedArticlesTask = async (
   const articlesFolder = zip.folder('articles');
 
   if (articlesFolder) {
+    const usedNames = new Map<string, number>();
     for (const article of articles) {
-      const fileName = `${filenameService.sanitizeFilename(article.title)}.md`;
-      const mdFile = articlesFolder.file(fileName);
+      // Rows are walked in CSV order, which is the order the exporter wrote the
+      // .md files, so duplicate titles resolve to their own `-N` file. Fall back
+      // to the legacy renderer-export name for older archives.
+      const fileName = nextExportedMarkdownFileName(article.title, usedNames);
+      const mdFile = articlesFolder.file(fileName)
+        ?? articlesFolder.file(`${filenameService.sanitizeFilename(article.title)}.md`);
       if (!mdFile) continue;
 
       const mdText = await mdFile.async('text');

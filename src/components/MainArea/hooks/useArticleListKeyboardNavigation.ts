@@ -9,6 +9,7 @@ import {
   isVimScrollHalfDownShortcut,
   isVimScrollHalfUpShortcut,
   isVimScrollTopKey,
+  getShortcutPriorityLayer,
   keybindingService,
 } from '@/services/shortcuts/shortcutService';
 import { animateElementScrollTop, getScrollableBottom } from '@/utils/fixedTimeScroll';
@@ -93,6 +94,15 @@ export const useArticleListKeyboardNavigation = ({
     };
 
     const isArticleListCovered = (): boolean => articleViewOverlayPhaseRef.current !== 'closed';
+
+    // Raw key match for hold release: deliberately ignores shortcut layer and
+    // modifiers so a held j/k released under an overlay/modal or with
+    // Cmd/Shift down still stops the hold loop.
+    const isHoldStepKey = (e: KeyboardEvent): boolean => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') return true;
+      const key = e.key.toLowerCase();
+      return key === 'j' || key === 'k';
+    };
 
     const keepHashInView = (hash: string) => {
       scrollKeyboardFocusIntoViewRef.current(hash);
@@ -233,12 +243,31 @@ export const useArticleListKeyboardNavigation = ({
       });
     };
 
+    const resetHold = () => {
+      holdDirection = 0;
+      holdArmed = false;
+      nextStepAt = 0;
+      clearArmFallback();
+      if (holdRafId !== null) {
+        cancelAnimationFrame(holdRafId);
+        holdRafId = null;
+      }
+    };
+
     const startHoldLoop = () => {
       if (holdRafId !== null) return;
 
       const loop = (now: number) => {
         if (holdDirection === 0) {
           holdRafId = null;
+          return;
+        }
+
+        // Article overlay or modal now covers the list: stop stepping. A new
+        // keydown after the cover closes starts a fresh hold.
+        if (isArticleListCovered() || getShortcutPriorityLayer() === 'modal') {
+          holdRafId = null;
+          resetHold();
           return;
         }
 
@@ -320,12 +349,19 @@ export const useArticleListKeyboardNavigation = ({
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (isArticleListCovered()) return;
-      if (!isScrollDownShortcut(e) && !isScrollUpShortcut(e)) return;
-      holdDirection = 0;
-      holdArmed = false;
-      nextStepAt = 0;
-      clearArmFallback();
+      if (!isHoldStepKey(e)) return;
+      resetHold();
+    };
+
+    // Keyup never arrives if focus leaves the window (Cmd+Tab) mid-hold.
+    const handleWindowBlur = () => {
+      resetHold();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        resetHold();
+      }
     };
 
     const unregisterKeyDown = keybindingService.register({
@@ -338,16 +374,17 @@ export const useArticleListKeyboardNavigation = ({
       priority: 8,
       handler: handleKeyUp,
     });
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       unregisterKeyDown();
       unregisterKeyUp();
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearPendingTopSequence();
-      clearArmFallback();
       cancelActiveScrollAnimation();
-      if (holdRafId !== null) {
-        cancelAnimationFrame(holdRafId);
-      }
+      resetHold();
     };
   }, [articleListRef]);
 };

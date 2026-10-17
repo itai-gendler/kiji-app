@@ -37,7 +37,12 @@ class OpmlWorkflowService {
     if (this.unsubscribeTaskEvents) return;
 
     this.unsubscribeTaskEvents = helperTaskClient.onTaskResult((event) => {
-      void this.handleTaskResult(event);
+      void this.handleTaskResult(event).catch((error) => {
+        logger.warn('OpmlWorkflow', 'Favicon task result handling failed', {
+          taskId: event.taskId,
+          error,
+        });
+      });
     });
 
     this.scheduleMissingFaviconBackfill();
@@ -109,10 +114,15 @@ class OpmlWorkflowService {
     opmlText: string,
     parseOptions: ParseOpmlEntriesOptions = {},
   ): Promise<OpmlImportResult> {
-    await helperTaskClient.clearTasks();
+    // Reset favicon bookkeeping BEFORE clearing: removed pending tasks settle
+    // as `cancelled` synchronously, and handleTaskResult must ignore them rather
+    // than marking those feeds faviconFetchFailed.
     this.faviconTaskFeedMap.clear();
     this.pendingFaviconTaskCounts.clear();
     this.visibleStationFaviconBoosted.clear();
+    // Only favicon work belongs to this workflow; saved-article import chunks and
+    // article preprocess tasks keep running.
+    await helperTaskClient.clearTasks({ kinds: [HELPER_TASK_KIND.FAVICON_FETCH] });
 
     let parsedOpml;
     try {

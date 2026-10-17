@@ -1,6 +1,7 @@
 import type { Author, Enclosure, MediaThumbnail } from "../../types/article";
 import { FEED_FETCH_TIMEOUT_MS } from "../../constants";
 import { tauriClient } from "../../lib/tauriClient";
+import { parseStructuredCommandError } from "../../lib/tauriClient/commandError";
 import { enrichFeedItemsWithMatchedDates, matchPublishedDate, matchPublishedDateFromElement, matchUpdatedDate, matchUpdatedDateFromElement } from "./publishDateMatcher";
 import { logger } from "../logger/logger";
 import { parseFeedWithFeedsmith } from "./feedsmithAdapter";
@@ -72,20 +73,36 @@ class FeedsFetcher {
     const normalizedUrl = validateFeedUrl(url);
     const requestId = `feed-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const abortListener = () => {
-      void tauriClient.feeds.abortRequest({ requestId });
+      // Fire-and-forget: the request may already have settled in Rust.
+      void Promise.resolve()
+        .then(() => tauriClient.feeds.abortRequest({ requestId }))
+        .catch((error: unknown) => {
+          logger.warn("FeedsFetcher", "Failed to abort feed request", { requestId, error });
+        });
     };
 
     options.signal?.addEventListener("abort", abortListener, { once: true });
     const startedAt = performance.now();
     try {
       this.throwIfAborted(options.signal);
-      const response = await tauriClient.feeds.fetchWithCache({
-        url: normalizedUrl,
-        requestId,
-        etag: options.etag,
-        lastModified: options.lastModified,
-        timeout: FEED_FETCH_TIMEOUT_MS,
-      });
+      let response: Awaited<ReturnType<typeof tauriClient.feeds.fetchWithCache>>;
+      try {
+        response = await tauriClient.feeds.fetchWithCache({
+          url: normalizedUrl,
+          requestId,
+          etag: options.etag,
+          lastModified: options.lastModified,
+          timeout: FEED_FETCH_TIMEOUT_MS,
+        });
+      } catch (error) {
+        // An aborted signal cancels the Rust request, which then rejects with
+        // the raw FEED_REQUEST_CANCELLED command error. Normalise to an
+        // AbortError so callers skip failure/backoff writes.
+        if (options.signal?.aborted || isFeedRequestCancelledError(error)) {
+          throw createFeedAbortError();
+        }
+        throw error;
+      }
       this.throwIfAborted(options.signal);
       const durationMs = Math.round(performance.now() - startedAt);
 
@@ -151,11 +168,19 @@ class FeedsFetcher {
 
   private throwIfAborted(signal?: AbortSignal): void {
     if (signal?.aborted) {
-      const error = new Error("Feed fetch was aborted");
-      error.name = "AbortError";
-      throw error;
+      throw createFeedAbortError();
     }
   }
+}
+
+function createFeedAbortError(): Error {
+  const error = new Error("Feed fetch was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isFeedRequestCancelledError(error: unknown): boolean {
+  return parseStructuredCommandError(error)?.code === "FEED_REQUEST_CANCELLED";
 }
 
 export const feedsFetcher = new FeedsFetcher();

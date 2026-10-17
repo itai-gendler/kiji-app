@@ -4,7 +4,7 @@ use crate::feeds::types::{
 };
 use chrono::{DateTime, Utc};
 use feed_rs::model::{Entry, Link, MediaObject, Text};
-use feed_rs::parser;
+use feed_rs::parser::{self, generate_id};
 use std::io::Cursor;
 
 const PARSER_PATH: &str = "feed-rs";
@@ -27,7 +27,10 @@ pub fn parse_feed_preview(
     }
 
     let format_hint = detect_format_hint(trimmed);
-    let feed = parser::parse(Cursor::new(trimmed.as_bytes()))
+    let feed = parser::Builder::new()
+        .id_generator(stable_id_generator)
+        .build()
+        .parse(Cursor::new(trimmed.as_bytes()))
         .map_err(|error| format!("Native feed parse failed: {error}"))?;
     let items = feed
         .entries
@@ -43,6 +46,16 @@ pub fn parse_feed_preview(
         parser_path: PARSER_PATH.to_string(),
         parity_gaps: KNOWN_PARITY_GAPS.iter().map(|gap| (*gap).to_string()).collect(),
     })
+}
+
+/// Same as feed-rs's default `generate_id`, except that when it would fall back
+/// to a random UUID we return "" instead. A random id would become the item's
+/// guid and change the article hash on every fetch, inserting duplicates.
+fn stable_id_generator(links: &[Link], title: &Option<Text>, uri: Option<&str>) -> String {
+    if links.is_empty() && (uri.is_none() || title.is_none()) {
+        return String::new();
+    }
+    generate_id(links, title, uri)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -293,6 +306,7 @@ fn non_empty_vec<T>(values: Vec<T>) -> Option<Vec<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feeds::article_hash::generate_article_hash;
     use std::fs;
     use std::path::PathBuf;
 
@@ -394,5 +408,76 @@ mod tests {
         .expect("minimal atom");
 
         assert!(preview.parity_gaps.iter().any(|gap| gap.contains("feedsmith")));
+    }
+
+    const RSS_WITHOUT_LINK_OR_GUID: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example</title>
+    <link>https://example.com/</link>
+    <item>
+      <title>No link or guid</title>
+      <description>Body</description>
+    </item>
+    <item>
+      <title>Has guid</title>
+      <guid isPermaLink="false">guid-123</guid>
+    </item>
+  </channel>
+</rss>"#;
+
+    #[test]
+    fn item_without_link_or_guid_has_stable_hash_across_parses() {
+        let parse = || {
+            parse_feed_preview(
+                RSS_WITHOUT_LINK_OR_GUID.to_string(),
+                "https://example.com/feed.xml".to_string(),
+            )
+            .expect("rss parse")
+        };
+        let first = parse();
+        let second = parse();
+
+        assert!(first.items[0].link.is_none());
+        assert!(first.items[0].guid.is_none());
+        assert_eq!(
+            generate_article_hash(&first.items[0]),
+            generate_article_hash(&second.items[0])
+        );
+    }
+
+    #[test]
+    fn item_with_guid_keeps_it() {
+        let preview = parse_feed_preview(
+            RSS_WITHOUT_LINK_OR_GUID.to_string(),
+            "https://example.com/feed.xml".to_string(),
+        )
+        .expect("rss parse");
+
+        assert_eq!(preview.items[1].guid.as_deref(), Some("guid-123"));
+    }
+
+    #[test]
+    fn item_with_link_keeps_feed_rs_generated_guid() {
+        let raw = r#"<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example</title>
+    <item>
+      <title>Linked</title>
+      <link>https://example.com/post</link>
+    </item>
+  </channel>
+</rss>"#;
+        let default_id = parser::parse(Cursor::new(raw.as_bytes()))
+            .expect("default parse")
+            .entries[0]
+            .id
+            .clone();
+        let preview = parse_feed_preview(raw.to_string(), "https://example.com/feed.xml".to_string())
+            .expect("rss parse");
+
+        assert!(!default_id.is_empty());
+        assert_eq!(preview.items[0].guid.as_deref(), Some(default_id.as_str()));
     }
 }

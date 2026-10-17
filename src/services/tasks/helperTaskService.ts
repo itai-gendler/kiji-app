@@ -2,6 +2,7 @@ import { InProcessExecutionBackend } from '@/services/tasks/backends/inProcessEx
 import type {
   HelperTaskAddRequest,
   HelperTaskAddResponse,
+  HelperTaskClearRequest,
   HelperTaskClearResponse,
   HelperTaskQueueSizeSnapshot,
   HelperTaskRemoveRequest,
@@ -54,8 +55,10 @@ export async function helperTaskRemove(
   return getServer().removeTask(RENDERER_OWNER_ID, request.taskId);
 }
 
-export async function helperTaskClear(): Promise<HelperTaskClearResponse> {
-  return getServer().clearTasks(RENDERER_OWNER_ID);
+export async function helperTaskClear(
+  request?: HelperTaskClearRequest,
+): Promise<HelperTaskClearResponse> {
+  return getServer().clearTasks(RENDERER_OWNER_ID, request);
 }
 
 export async function helperTaskGetQueueSnapshot(): Promise<HelperTaskQueueSizeSnapshot> {

@@ -106,13 +106,19 @@ export const applyOpmlImportEntries = async (
   }
 
   // Pass 2 — feed creation costs several IPC round-trips each; run it with bounded
-  // concurrency rather than one feed at a time.
+  // concurrency rather than one feed at a time. The untagged sort-order base is
+  // computed once from the library snapshot above (same formula as
+  // feedsManager.addFeed) so each insert skips a full-library getAllFeeds read.
+  const untaggedSortOrderBase = existingFeeds
+    .filter((feed) => !feed.tags || feed.tags.length === 0)
+    .reduce((max, feed) => Math.max(max, feed.sortOrder ?? 0), -1) + 1;
   const createdFeeds: Array<Feed | null> = new Array(creations.length).fill(null);
   await runWithBoundedConcurrency(creations.length, async (index) => {
     try {
       const created = await feedsManager.addFeedWithoutMetadata(
         creations[index].url,
         creations[index].title,
+        { sortOrder: untaggedSortOrderBase + index },
       );
       createdFeeds[index] = created;
     } catch {
@@ -120,6 +126,7 @@ export const applyOpmlImportEntries = async (
     }
   });
 
+  const createdFeedById = new Map<string, Feed>();
   createdFeeds.forEach((feed, index) => {
     if (!feed) {
       return;
@@ -127,6 +134,7 @@ export const applyOpmlImportEntries = async (
 
     imported += 1;
     importedFeeds.push({ id: feed.id, url: feed.url });
+    createdFeedById.set(feed.id, feed);
     if (!firstImportedFeedNavigation) {
       firstImportedFeedNavigation = {
         type: 'feed',
@@ -182,18 +190,30 @@ export const applyOpmlImportEntries = async (
   }
 
   // Pass 3b — emoji and station attachment; membership order is fixed by the post-pass
-  // below, so these writes do not have to run in file order.
+  // below, so these writes do not have to run in file order. Feed rows are already
+  // committed here, so a failed write is a partial failure, not an import failure.
+  let partialFailures = 0;
+  const appliedEmojiByFeedId = new Map<string, string>();
+  const appliedStationsByFeedId = new Map<string, string[]>();
   await runWithBoundedConcurrency(sideEffects.length, async (index) => {
     const { feedId, entry, syncStationEmoji } = sideEffects[index];
-    if (entry.emoji) {
-      await feedsManager.updateFeed(feedId, { emoji: entry.emoji });
-    }
-
-    if (entry.station) {
-      await tagsManager.addTagToFeed(feedId, entry.station);
-      if (syncStationEmoji && entry.stationEmoji) {
-        await tagsManager.updateTag(entry.station, { emoji: entry.stationEmoji });
+    try {
+      if (entry.emoji) {
+        await feedsManager.updateFeed(feedId, { emoji: entry.emoji });
+        appliedEmojiByFeedId.set(feedId, entry.emoji);
       }
+
+      if (entry.station) {
+        await tagsManager.addTagToFeed(feedId, entry.station);
+        const stations = appliedStationsByFeedId.get(feedId) ?? [];
+        stations.push(entry.station);
+        appliedStationsByFeedId.set(feedId, stations);
+        if (syncStationEmoji && entry.stationEmoji) {
+          await tagsManager.updateTag(entry.station, { emoji: entry.stationEmoji });
+        }
+      }
+    } catch {
+      partialFailures += 1;
     }
   });
 
@@ -211,9 +231,18 @@ export const applyOpmlImportEntries = async (
     }
   }
 
-  const currentTags = await tagsManager.getAllTags();
-  const tagByName = new Map(currentTags.map((tag) => [tag.name, tag]));
-  for (const [stationName, fileFeedIds] of membershipInFile) {
+  // Post-pass reorders are best-effort: the feeds are committed, so a failed read
+  // here must not reject the import (hydrateLibraryAfterImport reloads order).
+  let currentTags: Awaited<ReturnType<typeof tagsManager.getAllTags>> | null = null;
+  if (membershipInFile.size > 0) {
+    try {
+      currentTags = await tagsManager.getAllTags();
+    } catch {
+      currentTags = null;
+    }
+  }
+  const tagByName = new Map((currentTags ?? []).map((tag) => [tag.name, tag]));
+  for (const [stationName, fileFeedIds] of currentTags ? membershipInFile : []) {
     const currentIds = tagByName.get(stationName)?.feedIds ?? [];
     const extras = currentIds.filter((feedId) => !fileFeedIds.has(feedId));
     try {
@@ -223,8 +252,16 @@ export const applyOpmlImportEntries = async (
     }
   }
 
+  let allFeedsAfterImport: Feed[] | null = null;
   if (unstationedIdsInFile.size > 0) {
-    const allFeeds = await feedsManager.getAllFeeds();
+    try {
+      allFeedsAfterImport = await feedsManager.getAllFeeds();
+    } catch {
+      allFeedsAfterImport = null;
+    }
+  }
+  if (allFeedsAfterImport) {
+    const allFeeds = allFeedsAfterImport;
     const currentUntagged = allFeeds
       .filter((candidate) => !candidate.tags || candidate.tags.length === 0)
       .map((candidate) => candidate.id);
@@ -247,6 +284,20 @@ export const applyOpmlImportEntries = async (
     ? { type: 'station', stationName: importedStations[0] }
     : firstImportedFeedNavigation ?? undefined;
 
+  // Reflect this import's own writes on the created rows so consumers of
+  // `createdFeeds` see station membership and emoji without a per-feed re-read.
+  const publishedFeeds = importedFeeds.flatMap(({ id }) => {
+    const feed = createdFeedById.get(id);
+    if (!feed) return [];
+    const emoji = appliedEmojiByFeedId.get(id);
+    const stations = appliedStationsByFeedId.get(id);
+    return [{
+      ...feed,
+      ...(emoji ? { emoji } : {}),
+      tags: stations ? [...new Set([...(feed.tags ?? []), ...stations])] : feed.tags ?? [],
+    }];
+  });
+
   return {
     summary: {
       total: entries.length,
@@ -254,8 +305,10 @@ export const applyOpmlImportEntries = async (
       skippedDuplicate,
       invalid,
       failed,
+      partialFailures,
     },
     importedFeeds,
+    createdFeeds: publishedFeeds,
     navigationTarget,
   };
 });

@@ -9,7 +9,25 @@ vi.mock('@/services/http/httpClientFactory', () => ({
   },
 }));
 
+const getFeedById = vi.hoisted(() => vi.fn());
+const publishFeedsAdded = vi.hoisted(() => vi.fn());
+const hydrateLibraryAfterImport = vi.hoisted(() => vi.fn());
+
+vi.mock('@/services/feeds/feedsManager', () => ({
+  feedsManager: { getFeedById },
+}));
+
+vi.mock('@/services/feeds/libraryOrderPersist', () => ({
+  hydrateLibraryAfterImport,
+}));
+
+vi.mock('@/services/ui/feedLibraryMutationBus', () => ({
+  feedLibraryMutationBus: { publishFeedsAdded },
+}));
+
 import {
+  applyOpmlImportResultToLibrary,
+  formatOpmlImportSummary,
   fetchOpmlTextFromUrl,
   isLikelyOpmlUrl,
   isOpmlDocument,
@@ -90,8 +108,9 @@ describe('navigateAfterOpmlImport', () => {
 
     await navigateAfterOpmlImport(
       {
-        summary: { total: 1, imported: 1, skippedDuplicate: 0, invalid: 0, failed: 0 },
+        summary: { total: 1, imported: 1, skippedDuplicate: 0, invalid: 0, failed: 0, partialFailures: 0 },
         importedFeeds: [{ id: 'feed-1', url: 'https://example.com/rss' }],
+        createdFeeds: [],
         navigationTarget: { type: 'station', stationName: 'Tech' },
       },
       { selectTag, selectFeed },
@@ -107,8 +126,9 @@ describe('navigateAfterOpmlImport', () => {
 
     await navigateAfterOpmlImport(
       {
-        summary: { total: 1, imported: 1, skippedDuplicate: 0, invalid: 0, failed: 0 },
+        summary: { total: 1, imported: 1, skippedDuplicate: 0, invalid: 0, failed: 0, partialFailures: 0 },
         importedFeeds: [{ id: 'feed-1', url: 'https://example.com/rss' }],
+        createdFeeds: [],
         navigationTarget: {
           type: 'feed',
           feedId: 'feed-1',
@@ -134,13 +154,51 @@ describe('navigateAfterOpmlImport', () => {
 
     await navigateAfterOpmlImport(
       {
-        summary: { total: 0, imported: 0, skippedDuplicate: 0, invalid: 0, failed: 0 },
+        summary: { total: 0, imported: 0, skippedDuplicate: 0, invalid: 0, failed: 0, partialFailures: 0 },
         importedFeeds: [],
+        createdFeeds: [],
       },
       { selectTag, selectFeed },
     );
 
     expect(selectTag).not.toHaveBeenCalled();
     expect(selectFeed).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyOpmlImportResultToLibrary', () => {
+  it('publishes the feeds the import created without re-reading each one', async () => {
+    hydrateLibraryAfterImport.mockResolvedValue(undefined);
+    const refreshTotalFeeds = vi.fn().mockResolvedValue(undefined);
+    const createdFeeds = [
+      { id: 'feed-1', url: 'https://one.com/rss', title: 'One', tags: ['Tech'] },
+      { id: 'feed-2', url: 'https://two.com/rss', title: 'Two', tags: [] },
+    ];
+
+    await applyOpmlImportResultToLibrary(
+      {
+        summary: { total: 2, imported: 2, skippedDuplicate: 0, invalid: 0, failed: 0, partialFailures: 0 },
+        importedFeeds: createdFeeds.map(({ id, url }) => ({ id, url })),
+        createdFeeds,
+      },
+      { refreshTotalFeeds },
+    );
+
+    expect(getFeedById).not.toHaveBeenCalled();
+    expect(publishFeedsAdded).toHaveBeenCalledWith(createdFeeds);
+    expect(hydrateLibraryAfterImport).toHaveBeenCalledTimes(1);
+    expect(refreshTotalFeeds).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('formatOpmlImportSummary', () => {
+  it('mentions station or emoji writes that failed after the feeds were created', () => {
+    const base = { total: 3, imported: 3, skippedDuplicate: 0, invalid: 0, failed: 0 };
+    expect(formatOpmlImportSummary({ ...base, partialFailures: 0 })).toBe(
+      'Imported 3 feeds. Skipped 0 duplicates, 0 invalid, 0 failed.',
+    );
+    expect(formatOpmlImportSummary({ ...base, partialFailures: 2 })).toBe(
+      'Imported 3 feeds. Skipped 0 duplicates, 0 invalid, 0 failed. 2 station or emoji updates failed.',
+    );
   });
 });

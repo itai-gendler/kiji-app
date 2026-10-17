@@ -1242,6 +1242,16 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
     if (!articleToShow || saveLoading) return;
 
     setSaveLoading(true);
+    // The user may switch articles while save/unsave IPCs or the reader fetch
+    // are in flight. Persistence and list-row updates still complete for the
+    // captured article; only this view's state is guarded.
+    const targetHash = articleToShow.hash;
+    const isTargetStillShown = () => currentArticleHashRef.current === targetHash;
+    const applySavedPayloadToView = (saved: boolean, payload: ArticleListUpdatePayload) => {
+      if (!isTargetStillShown()) return;
+      setIsSaved(saved);
+      setArticleToShow((prev) => (prev?.hash === targetHash ? { ...prev, ...payload } : prev));
+    };
     try {
       let savedArticleId = articleToShow.savedArticleId;
 
@@ -1258,8 +1268,7 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
         if (!isTemporaryArticle && isFeedLinkedArticle) {
           await articlesManager.updateSavedStatus(articleToShow.feedId, articleToShow.hash, false);
         }
-        setIsSaved(false);
-        setArticleToShow({ ...articleToShow, ...unsavedPayload });
+        applySavedPayloadToView(false, unsavedPayload);
 
         // Update the article in the list (only for non-temporary)
         if (!isTemporaryArticle && isFeedLinkedArticle) {
@@ -1317,11 +1326,10 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
             savedArticle.id
           );
         }
-        setIsSaved(true);
         const savedPayload = buildSavedListUpdatePayload(true, savedArticle.id);
 
         // Keep the live feed body for reader/basic toggles; only attach saved metadata.
-        setArticleToShow({ ...articleToShow, ...savedPayload });
+        applySavedPayloadToView(true, savedPayload);
 
         // Update the article in the list (only for non-temporary)
         if (!isTemporaryArticle && isFeedLinkedArticle) {

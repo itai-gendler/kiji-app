@@ -174,14 +174,36 @@ const getPerformanceTimeMs = (): number => {
     : Date.now();
 };
 
+/** Cap on a frame yield: WebKit suspends rAF for an occluded window. */
+const ARTICLE_LIST_FRAME_YIELD_MAX_WAIT_MS = 100;
+
 const yieldToArticleListPrefetchFrame = async (): Promise<void> => {
   await new Promise<void>((resolve) => {
-    if (typeof window.requestAnimationFrame === 'function') {
-      window.requestAnimationFrame(() => resolve());
+    if (typeof window.requestAnimationFrame !== 'function') {
+      window.setTimeout(resolve, 0);
       return;
     }
 
-    window.setTimeout(resolve, 0);
+    // An occluded window that still reports visible never paints, so a bare
+    // rAF wait stalled station refresh (and held the scheduler pause) forever.
+    let settled = false;
+    let rafId: number | null = null;
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(timerId);
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+      resolve();
+    };
+    const timerId = window.setTimeout(finish, ARTICLE_LIST_FRAME_YIELD_MAX_WAIT_MS);
+    const scheduledRafId = window.requestAnimationFrame(finish);
+    if (!settled) {
+      rafId = scheduledRafId;
+    }
   });
 };
 export type FeedEditTarget =

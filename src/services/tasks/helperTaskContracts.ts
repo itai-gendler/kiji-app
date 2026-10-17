@@ -173,6 +173,14 @@ export interface HelperTaskRemoveResponse {
   removed: boolean;
 }
 
+export interface HelperTaskClearRequest {
+  /**
+   * Only clear tasks of these kinds. Omitted = every kind for the owner
+   * (pending and running).
+   */
+  kinds?: HelperTaskKind[];
+}
+
 export interface HelperTaskClearResponse {
   cleared: number;
 }
