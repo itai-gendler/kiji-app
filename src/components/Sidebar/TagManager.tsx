@@ -5,6 +5,12 @@ import UnfoldLessOutlined from '@mui/icons-material/UnfoldLessOutlined';
 import { tagsManager } from '@/services/tags/tagsManager';
 import { feedsManager, type Feed } from '@/services/feeds/feedsManager';
 import { getAllFeedMetadataCached } from '@/services/feeds/feedMetadataCache';
+import {
+  applySidebarFavicons,
+  hydrateSidebarFavicons,
+  needsSidebarFavicon,
+  rememberSidebarFavicon,
+} from '@/services/favicons/sidebarFaviconCache';
 import { opmlWorkflowService } from '@/services/feeds/opmlWorkflowService';
 import {
   useFeedDeletedMutation,
@@ -378,11 +384,45 @@ export const TagManager: React.FC = () => {
     setFeedCache(new Map());
   }, [loadTags]);
 
+  // Nested rows paint only while expanded; hydrate just those favicons after paint.
+  useEffect(() => {
+    const paintedFeeds: Feed[] = [];
+    for (const tag of tags) {
+      if (!expandedStations.has(tag.name)) continue;
+      for (const feedId of tag.feedIds) {
+        const feed = feedCache.get(feedId);
+        if (feed) paintedFeeds.push(feed);
+      }
+    }
+    if (!paintedFeeds.some(needsSidebarFavicon)) return;
+    let cancelled = false;
+    void hydrateSidebarFavicons(paintedFeeds).then((hydrated) => {
+      if (cancelled || hydrated.size === 0) return;
+      setFeedCache((prev) => {
+        const resident = [...hydrated.keys()]
+          .map((feedId) => prev.get(feedId))
+          .filter((feed): feed is Feed => !!feed);
+        const merged = applySidebarFavicons(resident, hydrated);
+        if (merged === resident) return prev;
+        const next = new Map(prev);
+        for (const feed of merged) {
+          next.set(feed.id, feed);
+        }
+        feedCacheRef.current = next;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedStations, feedCache, tags]);
+
   useEffect(() => {
     if (!feedFaviconRefreshed) return;
     const { feedId } = feedFaviconRefreshed;
     feedsManager.getFeedById(feedId).then((updated) => {
       if (!updated) return;
+      rememberSidebarFavicon(updated);
       setFeedCache((prev) => {
         if (!prev.has(feedId)) return prev;
         return rememberFeedsInCache(

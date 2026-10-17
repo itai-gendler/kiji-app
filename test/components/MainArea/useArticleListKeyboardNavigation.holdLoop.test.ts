@@ -4,6 +4,12 @@ import type { RefObject } from 'react';
 import type { Article } from '@/types/article';
 import type { ArticleViewOverlayPhase } from '@/contexts/FeedContext';
 import { useArticleListKeyboardNavigation } from '@/components/MainArea/hooks/useArticleListKeyboardNavigation';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
+
+const holdResets = () => getRobustnessSnapshot().counters['ui.keyboardHoldReset'];
 
 const makeArticles = (count: number): Article[] =>
   Array.from({ length: count }, (_, index) => ({ hash: `a${index}` }) as unknown as Article);
@@ -58,6 +64,7 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
   };
 
   beforeEach(() => {
+    resetRobustnessMetricsForTests();
     now = 0;
     rafQueue = new Map();
     nextRafId = 1;
@@ -86,6 +93,18 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
     expect(setKeyboardFocusHash.mock.calls.length).toBeGreaterThan(2);
   });
 
+  it('does not count a tap or a plain keyup release of a held key', () => {
+    setup({ current: 'closed' });
+    keyEvent('keydown', 'j');
+    keyEvent('keyup', 'j');
+    advanceFrames(5);
+    startHold();
+    keyEvent('keyup', 'j');
+    advanceFrames(5);
+
+    expect(holdResets()).toBeUndefined();
+  });
+
   it('stops stepping once the article overlay covers the list and keyup arrives under it', () => {
     const { hook, setKeyboardFocusHash } = setup({ current: 'closed' });
     startHold();
@@ -99,6 +118,7 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
 
     expect(setKeyboardFocusHash.mock.calls.length).toBe(callsAfterRelease);
     expect(rafQueue.size).toBe(0);
+    expect(holdResets()).toBe(1);
   });
 
   it('stops when j is released with a modifier held over a modal (Cmd+N)', () => {
@@ -113,6 +133,7 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
     advanceFrames(60);
 
     expect(setKeyboardFocusHash.mock.calls.length).toBe(callsAfterRelease);
+    expect(holdResets()).toBe(1);
   });
 
   it('stops when the window blurs mid-hold (no keyup ever arrives)', () => {
@@ -127,6 +148,7 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
 
     expect(setKeyboardFocusHash.mock.calls.length).toBe(callsAfterBlur);
     expect(rafQueue.size).toBe(0);
+    expect(holdResets()).toBe(1);
   });
 
   it('stops when the document becomes hidden mid-hold', () => {
@@ -154,6 +176,7 @@ describe('useArticleListKeyboardNavigation held j/k loop', () => {
     advanceFrames(60);
 
     expect(setKeyboardFocusHash.mock.calls.length).toBe(callsAfterCover);
+    expect(holdResets()).toBe(1);
   });
 
   it('removes blur/visibility listeners on unmount', () => {

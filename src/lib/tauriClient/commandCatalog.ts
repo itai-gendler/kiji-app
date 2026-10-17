@@ -53,6 +53,7 @@ export const tauriCommandCatalog: Record<
     { apiMethod: "saveOpmlFile", ipcChannel: "opml-save-file", kind: "invoke", targetCommand: "feeds.imports.saveOpml", rustCommand: "shell_dialog_save_file" },
     { apiMethod: "dbFeedsGetAll", ipcChannel: "db-feeds-get-all", kind: "invoke", targetCommand: "feeds.list", rustCommand: "feeds_list" },
     { apiMethod: "dbFeedsLibrarySidebarSnapshot", ipcChannel: "db-feeds-library-sidebar-snapshot", kind: "invoke", targetCommand: "feeds.librarySidebarSnapshot", rustCommand: "feeds_library_sidebar_snapshot" },
+    { apiMethod: "dbFeedsGetFavicons", ipcChannel: "db-feeds-get-favicons", kind: "invoke", targetCommand: "feeds.getFavicons", rustCommand: "feeds_get_favicons" },
     { apiMethod: "dbFeedsGet", ipcChannel: "db-feeds-get", kind: "invoke", targetCommand: "feeds.get", rustCommand: "feeds_get" },
     { apiMethod: "dbFeedsGetByUrl", ipcChannel: "db-feeds-get-by-url", kind: "invoke", targetCommand: "feeds.getByUrl", rustCommand: "feeds_get_by_url" },
     { apiMethod: "dbFeedsInsert", ipcChannel: "db-feeds-insert", kind: "invoke", targetCommand: "feeds.create", rustCommand: "feeds_create" },
@@ -153,6 +154,7 @@ export const tauriCommandCatalog: Record<
     { apiMethod: "logEntry", ipcChannel: "log-entry", kind: "invoke", targetCommand: "diagnostics.log.writeEntry", rustCommand: "diagnostics_log_write_entry" },
     { apiMethod: "getLogsPath", ipcChannel: "get-logs-path", kind: "invoke", targetCommand: "diagnostics.log.getPath", rustCommand: "diagnostics_log_get_path" },
     { apiMethod: "perfSnapshot", ipcChannel: "perf-snapshot", kind: "invoke", targetCommand: "diagnostics.performance.snapshot", rustCommand: "diagnostics_performance_snapshot" },
+    { apiMethod: "robustnessCounters", ipcChannel: "robustness-counters", kind: "invoke", targetCommand: "diagnostics.robustness.counters", rustCommand: "diagnostics_robustness_counters" },
     { apiMethod: "exportDiagnostics", ipcChannel: "export-diagnostics", kind: "invoke", targetCommand: "diagnostics.exportBundle", rustCommand: "diagnostics_export_bundle" },
   ],
   tasks: [

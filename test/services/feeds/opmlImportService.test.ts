@@ -4,6 +4,11 @@ import { tagsManager } from '@/services/tags/tagsManager';
 import { faviconFetcher } from '@/services/favicons/faviconFetcher';
 import { opmlImportService, parseOpmlEntries } from '@/services/feeds/opmlImportService';
 import * as feedStore from '@/stores/feedStore';
+import { logger } from '@/services/logger';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
 
 vi.mock('@/services/feeds/feedsManager', () => ({
   feedsManager: {
@@ -38,6 +43,7 @@ describe('opmlImportService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(feedStore.update).mockResolvedValue(undefined);
+    resetRobustnessMetricsForTests();
     vi.mocked(tagsManager.getAllTags).mockResolvedValue([]);
     vi.mocked(tagsManager.reorderStations).mockResolvedValue(undefined);
     vi.mocked(tagsManager.reorderMembership).mockResolvedValue(undefined);
@@ -339,5 +345,42 @@ describe('opmlImportService', () => {
     // Only the feed whose attach succeeded is published as stationed.
     expect(result.createdFeeds.filter((feed) => feed.tags.includes('Tech'))).toHaveLength(1);
     expect(tagsManager.reorderMembership).not.toHaveBeenCalled();
+    expect(getRobustnessSnapshot().counters['opml.importPartialFailures']).toBe(1);
+  });
+
+  it('logs one counts-only applied line and records no partial failures on a clean import', async () => {
+    const infoSpy = vi.spyOn(logger, 'info');
+    vi.mocked(feedsManager.getAllFeeds).mockResolvedValue([
+      { id: 'existing', url: 'https://dup.com/rss', title: 'Dup', tags: [] } as never,
+    ]);
+    vi.mocked(feedsManager.addFeedWithoutMetadata).mockImplementation(async (url: string, title?: string) => ({
+      id: `feed-${title}`,
+      url,
+      title: title || url,
+      tags: [],
+    } as never));
+    vi.mocked(feedsManager.updateFeed).mockResolvedValue(null);
+    vi.mocked(tagsManager.addTagToFeed).mockResolvedValue(undefined);
+
+    await opmlImportService.importEntries([
+      { url: 'https://one.com/rss', title: 'One', station: 'Tech' },
+      { url: 'https://dup.com/rss', title: 'Dup' },
+      { url: '', title: 'Broken' },
+    ]);
+
+    const appliedCalls = infoSpy.mock.calls.filter(([, message]) => message === 'OPML import applied');
+    expect(appliedCalls).toHaveLength(1);
+    const context = appliedCalls[0][2] as Record<string, number>;
+    expect(context).toEqual({
+      imported: 1,
+      skippedDuplicate: 1,
+      invalid: 1,
+      failed: 0,
+      partialFailures: 0,
+      createdFeeds: 1,
+      durationMs: expect.any(Number),
+    });
+    expect(JSON.stringify(context)).not.toContain('http');
+    expect(getRobustnessSnapshot().counters['opml.importPartialFailures']).toBeUndefined();
   });
 });

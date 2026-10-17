@@ -14,6 +14,7 @@ import {
   type HelperTaskResultEvent,
 } from '@/services/tasks/helperTaskContracts';
 import type { TaskExecutionBackend } from '@/services/tasks/backends/taskExecutionBackend';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 
 interface HelperTaskServerOptions {
   backend: TaskExecutionBackend;
@@ -156,6 +157,7 @@ export class HelperTaskServer {
     for (const pendingTask of removedPending) {
       this.emitCancelled(pendingTask);
     }
+    recordRobustnessEvent('helperTasks.pendingCancelledOnClear', removedPending.length);
 
     return { cleared };
   }

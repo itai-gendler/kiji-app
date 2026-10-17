@@ -21,6 +21,14 @@ export async function performanceSnapshot(): Promise<
   );
 }
 
+export async function robustnessCounters(): Promise<
+  DiagnosticsContract["robustnessCounters"]["response"]
+> {
+  return invokeContract<DiagnosticsContract["robustnessCounters"]>(
+    "diagnostics_robustness_counters",
+  );
+}
+
 export async function exportBundle(): Promise<DiagnosticsContract["exportBundle"]["response"]> {
   return invokeContract<DiagnosticsContract["exportBundle"]>("diagnostics_export_bundle");
 }

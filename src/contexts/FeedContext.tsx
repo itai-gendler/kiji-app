@@ -43,6 +43,7 @@ import {
   startRendererSessionMemoryDiagnostics,
 } from '@/services/diagnostics/rendererSessionMemoryDiagnostics';
 import { logListRefreshAttribution } from '@/services/diagnostics/webKitAttribution';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
 import { feedRefreshCoordinator } from '@/services/feeds/feedRefreshCoordinator';
 import { feedRefreshActivity } from '@/services/feeds/feedRefreshActivity';
@@ -188,7 +189,7 @@ const yieldToArticleListPrefetchFrame = async (): Promise<void> => {
     // rAF wait stalled station refresh (and held the scheduler pause) forever.
     let settled = false;
     let rafId: number | null = null;
-    const finish = (): void => {
+    const finish = (viaTimeout: boolean): void => {
       if (settled) {
         return;
       }
@@ -197,10 +198,13 @@ const yieldToArticleListPrefetchFrame = async (): Promise<void> => {
       if (rafId !== null) {
         window.cancelAnimationFrame(rafId);
       }
+      if (viaTimeout) {
+        recordRobustnessEvent('frameYield.timeout');
+      }
       resolve();
     };
-    const timerId = window.setTimeout(finish, ARTICLE_LIST_FRAME_YIELD_MAX_WAIT_MS);
-    const scheduledRafId = window.requestAnimationFrame(finish);
+    const timerId = window.setTimeout(() => finish(true), ARTICLE_LIST_FRAME_YIELD_MAX_WAIT_MS);
+    const scheduledRafId = window.requestAnimationFrame(() => finish(false));
     if (!settled) {
       rafId = scheduledRafId;
     }
@@ -294,6 +298,7 @@ class NativeFeedRefreshFailure extends Error {
 }
 
 const logNativeFeedRefreshFailure = (feedId: string, error: string): void => {
+  recordRobustnessEvent('feedContext.nativeFailureNotReRecorded');
   logger.warn('FeedContext', 'Feed fetch failed from UI refresh (native recorded)', {
     feedId,
     error,
@@ -2175,6 +2180,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } catch (error) {
         // Re-stash like the full path so the next idle flush retries the COUNT
         // instead of leaving the header total unknown with nothing pending.
+        recordRobustnessEvent('feedContext.asyncPhaseFailed');
         logger.warn('FeedContext', 'Switch header COUNT reconcile failed', { sourceKey, token, error });
         if (isSelectionActive(token) && pendingSwitchVisibleReconcileRef.current === null) {
           pendingSwitchVisibleReconcileRef.current = { token, sourceKey, tagQuery, mode };
@@ -2501,6 +2507,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Callers fire-and-forget. Keep the source pending so the next idle
       // trigger (scroll idle, overlay close, load-more settle) retries once;
       // those triggers are event-driven, so a persistent failure cannot spin.
+      recordRobustnessEvent('feedContext.asyncPhaseFailed');
       logger.warn('FeedContext', 'Background list refresh failed', {
         sourceKey: nextSource?.key ?? source.key,
         error,
@@ -3550,6 +3557,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Phase B is fire-and-forget; a count-sync / reconcile IPC failure must
       // not surface as an unhandled rejection. Loading cleanup stays in finally.
       if (!(error instanceof Error && error.name === 'AbortError')) {
+        recordRobustnessEvent('feedContext.asyncPhaseFailed');
         logger.warn('FeedContext', 'Station network refresh phase failed', { sourceKey, token, error });
       }
     } finally {
@@ -3932,6 +3940,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           });
         }
       } catch (error) {
+        recordRobustnessEvent('feedContext.asyncPhaseFailed');
         logger.warn('FeedContext', 'Smart view query failed', { viewType: type, token, error });
       } finally {
         if (isSelectionActive(token)) {
@@ -3972,6 +3981,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         cachedArticleTotal: total,
       });
     } catch (error) {
+      recordRobustnessEvent('feedContext.asyncPhaseFailed');
       logger.warn('FeedContext', 'Smart view query failed', { viewType: type, token, error });
     } finally {
       if (isSelectionActive(token)) {
@@ -4535,6 +4545,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       // The non-search snapshot is already back on screen; the header bar
       // fires this without awaiting, so a failed re-query only logs.
+      recordRobustnessEvent('feedContext.asyncPhaseFailed');
       logger.warn('FeedContext', 'Search-exit list re-query failed', { sourceKey: source?.key ?? null, error });
       return;
     }
@@ -4902,6 +4913,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           } catch (error) {
             // One failed station feed-id lookup must not abort the batch loop
             // (updates queued mid-flush would wait for the next scheduler event).
+            recordRobustnessEvent('feedContext.asyncPhaseFailed');
             logger.warn('FeedContext', 'Scheduler UI flush failed', {
               sourceKey: activeSource.key,
               error,

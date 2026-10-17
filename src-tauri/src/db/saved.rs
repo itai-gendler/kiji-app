@@ -2,6 +2,8 @@ use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExten
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::diagnostics::robustness::{record_many, RobustnessCounter};
+
 use super::{
     models::{bool_to_i64, to_json_string, to_optional_json_string, SavedArticleRecord},
     search::create_fts_prefix_query,
@@ -77,15 +79,148 @@ pub async fn saved_insert_batch(
     state: State<'_, DbState>,
 ) -> Result<i64, String> {
     let db = state.inner().clone();
+    // The contract stays `number` (rows inserted); callers derive the skipped
+    // count as `submitted - inserted`.
     db.write(move |connection| {
-        let mut inserted = 0;
-        for article in &articles {
-            insert_saved_article(connection, article)?;
-            inserted += 1;
-        }
-        Ok(inserted)
+        insert_saved_articles_batch(connection, &articles).map(|outcome| outcome.inserted)
     })
     .await
+}
+
+/// Result of [`insert_saved_articles_batch`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SavedInsertBatchOutcome {
+    pub inserted: i64,
+    /// Rows whose hash or normalized link matched an already-saved article.
+    pub skipped_existing: i64,
+    /// Rows that repeated an earlier row of the same batch.
+    pub skipped_in_batch: i64,
+}
+
+impl SavedInsertBatchOutcome {
+    pub fn skipped(&self) -> i64 {
+        self.skipped_existing + self.skipped_in_batch
+    }
+}
+
+/// SQLite's historic default `SQLITE_MAX_VARIABLE_NUMBER` is 999; stay below it.
+const EXISTING_LOOKUP_CHUNK: usize = 500;
+
+/// Normalized link identity for import dedupe: trimmed, fragment dropped,
+/// trailing slashes dropped. Deliberately conservative (no query or case
+/// rewriting) so distinct articles never collapse.
+fn normalize_saved_link(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let without_fragment = trimmed.split('#').next().unwrap_or("");
+    let normalized = without_fragment.trim_end_matches('/');
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+/// Identity keys of one saved row: the raw hash plus the normalized forms of
+/// the hash and link (imports store the URL as the hash).
+fn saved_identity_keys(article_hash: &str, link: Option<&str>) -> Vec<String> {
+    let mut keys = Vec::with_capacity(3);
+    let hash = article_hash.trim();
+    if !hash.is_empty() {
+        keys.push(hash.to_string());
+    }
+    for value in [Some(hash), link] {
+        if let Some(normalized) = value.and_then(normalize_saved_link) {
+            if !keys.contains(&normalized) {
+                keys.push(normalized);
+            }
+        }
+    }
+    keys
+}
+
+/// Loads identity keys of saved rows whose `article_hash` equals any candidate.
+/// Uses `idx_saved_articles_hash`; `link` has no index, so rows saved from a
+/// feed (hash != URL) are only matched when the import row carries their hash.
+fn load_existing_saved_identity_keys(
+    connection: &Connection,
+    candidates: &[String],
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut existing = std::collections::HashSet::new();
+    for chunk in candidates.chunks(EXISTING_LOOKUP_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT article_hash, link FROM saved_articles WHERE article_hash IN ({placeholders})"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare saved duplicate lookup: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| format!("Failed to query saved duplicates: {error}"))?;
+        for row in rows {
+            let (hash, link) =
+                row.map_err(|error| format!("Failed to read saved duplicate row: {error}"))?;
+            existing.extend(saved_identity_keys(&hash, link.as_deref()));
+        }
+    }
+    Ok(existing)
+}
+
+/// Inserts a batch of saved articles in one transaction, skipping rows whose
+/// article hash or normalized link is already saved or repeats an earlier row
+/// of the batch. Existing rows are found with one indexed lookup per batch
+/// (chunked by the SQLite parameter limit), never one query per row.
+pub fn insert_saved_articles_batch(
+    connection: &Connection,
+    articles: &[SavedArticleRecord],
+) -> Result<SavedInsertBatchOutcome, String> {
+    let keys_per_article: Vec<Vec<String>> = articles
+        .iter()
+        .map(|article| saved_identity_keys(&article.article_hash, article.link.as_deref()))
+        .collect();
+
+    // A stored hash may still carry the trailing slash or fragment the
+    // normalized key dropped; probe the slash variant as well.
+    let mut candidate_set = std::collections::HashSet::new();
+    for keys in &keys_per_article {
+        for key in keys {
+            candidate_set.insert(key.clone());
+            candidate_set.insert(format!("{key}/"));
+        }
+    }
+    let candidates: Vec<String> = candidate_set.into_iter().collect();
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("Failed to start saved import transaction: {error}"))?;
+    let existing = load_existing_saved_identity_keys(&transaction, &candidates)?;
+
+    let mut outcome = SavedInsertBatchOutcome::default();
+    let mut seen_in_batch = std::collections::HashSet::new();
+    for (article, keys) in articles.iter().zip(&keys_per_article) {
+        if keys.iter().any(|key| existing.contains(key)) {
+            outcome.skipped_existing += 1;
+            continue;
+        }
+        if keys.iter().any(|key| seen_in_batch.contains(key)) {
+            outcome.skipped_in_batch += 1;
+            continue;
+        }
+        insert_saved_article(&transaction, article)?;
+        seen_in_batch.extend(keys.iter().cloned());
+        outcome.inserted += 1;
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("Failed to commit saved import transaction: {error}"))?;
+    record_many(
+        RobustnessCounter::SavedImportSkippedExisting,
+        outcome.skipped() as u64,
+    );
+    Ok(outcome)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -322,7 +457,7 @@ pub fn insert_saved_article(
     let highlights_json = to_json_string(&article.highlights)?;
 
     connection
-        .execute(
+        .prepare_cached(
             r#"
             INSERT INTO saved_articles (
               id, article_hash, title, description, content, link, author,
@@ -338,7 +473,8 @@ pub fn insert_saved_article(
               ?19, ?20, ?21
             )
             "#,
-            params![
+        )
+        .and_then(|mut statement| statement.execute(params![
                 article.id,
                 article.article_hash,
                 article.title,
@@ -360,8 +496,7 @@ pub fn insert_saved_article(
                 metadata_json,
                 highlights_json,
                 article.notes,
-            ],
-        )
+            ]))
         .map(|_| ())
         .map_err(|error| format!("Failed to insert saved article: {error}"))
 }
@@ -461,4 +596,143 @@ fn get_saved_article_by_column(
         .query_row(&sql, params![value], SavedArticleRecord::from_row)
         .optional()
         .map_err(|error| format!("Failed to read saved article: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::run_migrations;
+
+    fn setup_connection() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        run_migrations(&mut connection).expect("run migrations");
+        connection
+    }
+
+    fn imported(id: &str, url: &str) -> SavedArticleRecord {
+        SavedArticleRecord {
+            id: id.to_string(),
+            article_hash: url.to_string(),
+            title: Some(format!("Title {id}")),
+            description: None,
+            content: Some("body".to_string()),
+            link: Some(url.to_string()),
+            author: None,
+            published_date: None,
+            saved_date: "2026-01-01T00:00:00Z".to_string(),
+            last_read_at: None,
+            feed_id: Some("saved".to_string()),
+            feed_url: Some(url.to_string()),
+            feed_title: None,
+            feed_favicon: None,
+            feed_favicon_has_transparency: None,
+            feed_favicon_bg_light: None,
+            feed_favicon_bg_dark: None,
+            feed_image: None,
+            preview_image: None,
+            metadata: None,
+            highlights: Vec::new(),
+            notes: None,
+        }
+    }
+
+    fn saved_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM saved_articles", [], |row| row.get(0))
+            .expect("count saved articles")
+    }
+
+    #[test]
+    fn reimporting_the_same_batch_inserts_nothing_and_reports_skips() {
+        let connection = setup_connection();
+        let first = vec![
+            imported("a1", "https://a.example/1"),
+            imported("a2", "https://a.example/2"),
+            imported("a3", "https://a.example/3"),
+        ];
+        let before = crate::diagnostics::robustness::snapshot().saved_import_skipped_existing;
+
+        let outcome = insert_saved_articles_batch(&connection, &first).expect("first import");
+        assert_eq!(outcome.inserted, 3);
+        assert_eq!(outcome.skipped(), 0);
+
+        // Second import of the same file: fresh random ids, same URLs.
+        let second: Vec<_> = first
+            .iter()
+            .map(|article| SavedArticleRecord {
+                id: format!("{}-again", article.id),
+                ..article.clone()
+            })
+            .collect();
+        let outcome = insert_saved_articles_batch(&connection, &second).expect("second import");
+
+        assert_eq!(
+            outcome,
+            SavedInsertBatchOutcome { inserted: 0, skipped_existing: 3, skipped_in_batch: 0 }
+        );
+        assert_eq!(saved_count(&connection), 3);
+        let after = crate::diagnostics::robustness::snapshot().saved_import_skipped_existing;
+        assert!(after >= before + 3, "skipped rows are recorded ({before} -> {after})");
+    }
+
+    #[test]
+    fn duplicates_within_one_batch_are_inserted_once() {
+        let connection = setup_connection();
+        let batch = vec![
+            imported("b1", "https://b.example/post"),
+            imported("b2", "https://b.example/post"),
+            // Same article, trailing slash + fragment: normalized link matches.
+            imported("b3", " https://b.example/post/#comments"),
+            imported("b4", "https://b.example/other"),
+        ];
+
+        let outcome = insert_saved_articles_batch(&connection, &batch).expect("import");
+
+        assert_eq!(
+            outcome,
+            SavedInsertBatchOutcome { inserted: 2, skipped_existing: 0, skipped_in_batch: 2 }
+        );
+        assert_eq!(saved_count(&connection), 2);
+    }
+
+    #[test]
+    fn existing_rows_match_by_hash_or_normalized_link() {
+        let connection = setup_connection();
+        // Saved from a feed: hash is the feed article hash, link is the URL.
+        let mut feed_saved = imported("feed-1", "https://c.example/feed-post");
+        feed_saved.article_hash = "feedhash123".to_string();
+        insert_saved_article(&connection, &feed_saved).expect("seed feed-saved row");
+        // Earlier import stored with a trailing slash.
+        insert_saved_article(&connection, &imported("old-1", "https://c.example/slash/"))
+            .expect("seed imported row");
+
+        let mut same_hash = imported("n1", "https://c.example/moved");
+        same_hash.article_hash = "feedhash123".to_string();
+        let batch = vec![
+            same_hash,
+            imported("n2", "https://c.example/slash"),
+            imported("n3", "https://c.example/new"),
+        ];
+
+        let outcome = insert_saved_articles_batch(&connection, &batch).expect("import");
+
+        assert_eq!(
+            outcome,
+            SavedInsertBatchOutcome { inserted: 1, skipped_existing: 2, skipped_in_batch: 0 }
+        );
+        assert_eq!(saved_count(&connection), 3);
+    }
+
+    #[test]
+    fn duplicate_lookup_uses_the_article_hash_index() {
+        let connection = setup_connection();
+        let plan: String = connection
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT article_hash, link FROM saved_articles WHERE article_hash IN (?1, ?2)",
+                params!["a", "b"],
+                |row| row.get(3),
+            )
+            .expect("query plan");
+        assert!(plan.contains("idx_saved_articles_hash"), "plan: {plan}");
+    }
 }

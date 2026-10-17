@@ -8,8 +8,8 @@ use super::{
         delete_article_feed_mappings, delete_orphan_unsaved_articles, reassign_article_owners,
     },
     models::{
-        bool_to_i64, to_json_string, to_optional_json_string, FeedRecord, SidebarFeedRecord,
-        TagRecord,
+        bool_to_i64, i64_to_bool, to_json_string, to_optional_json_string, FeedRecord,
+        SidebarFeedRecord, TagRecord,
     },
     DbState,
 };
@@ -20,6 +20,20 @@ pub struct LibrarySidebarSnapshot {
     pub feeds: Vec<SidebarFeedRecord>,
     pub stations: Vec<TagRecord>,
 }
+
+/// Favicon-only projection for sidebar row hydration after first paint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedFaviconRecord {
+    pub id: String,
+    pub favicon: String,
+    pub favicon_has_transparency: Option<bool>,
+    pub favicon_bg_light: Option<String>,
+    pub favicon_bg_dark: Option<String>,
+}
+
+/// SQLite's default bound-parameter limit is generous, but keep IN lists small.
+const FAVICON_QUERY_CHUNK_SIZE: usize = 500;
 
 /// Deserializes a "patch" field so JSON can distinguish "no change" from "clear":
 /// absent key -> `None` (requires `#[serde(default)]`), `null` -> `Some(None)`,
@@ -86,6 +100,16 @@ pub async fn feeds_library_sidebar_snapshot(
 ) -> Result<LibrarySidebarSnapshot, String> {
     let db = state.inner().clone();
     db.read(|connection| list_library_sidebar_snapshot(connection))
+        .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn feeds_get_favicons(
+    ids: Vec<String>,
+    state: State<'_, DbState>,
+) -> Result<Vec<FeedFaviconRecord>, String> {
+    let db = state.inner().clone();
+    db.read(move |connection| get_feed_favicons(connection, &ids))
         .await
 }
 
@@ -427,6 +451,43 @@ pub fn list_library_sidebar_snapshot(
         feeds: list_feeds_sidebar(connection)?,
         stations: super::tags::list_tags_with_feed_ids(connection)?,
     })
+}
+
+/// Favicon columns for the requested IDs; rows without a stored favicon are omitted.
+/// Primary-key IN lookups, chunked so large libraries never build an oversized statement.
+pub fn get_feed_favicons(
+    connection: &Connection,
+    ids: &[String],
+) -> Result<Vec<FeedFaviconRecord>, String> {
+    let mut seen = HashSet::with_capacity(ids.len());
+    let unique: Vec<&String> = ids.iter().filter(|id| seen.insert(id.as_str())).collect();
+    let mut favicons = Vec::new();
+    for chunk in unique.chunks(FAVICON_QUERY_CHUNK_SIZE) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT id, favicon, favicon_has_transparency, favicon_bg_light, favicon_bg_dark \
+             FROM feeds WHERE id IN ({placeholders}) AND favicon IS NOT NULL AND length(favicon) > 0"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare feed favicons query: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter()), |row| {
+                let has_transparency: Option<i64> = row.get("favicon_has_transparency")?;
+                Ok(FeedFaviconRecord {
+                    id: row.get("id")?,
+                    favicon: row.get("favicon")?,
+                    favicon_has_transparency: has_transparency.map(i64_to_bool),
+                    favicon_bg_light: row.get("favicon_bg_light")?,
+                    favicon_bg_dark: row.get("favicon_bg_dark")?,
+                })
+            })
+            .map_err(|error| format!("Failed to query feed favicons: {error}"))?;
+        for row in rows {
+            favicons.push(row.map_err(|error| format!("Failed to read feed favicon row: {error}"))?);
+        }
+    }
+    Ok(favicons)
 }
 
 pub fn get_feed(connection: &Connection, id: &str) -> Result<Option<FeedRecord>, String> {
@@ -870,5 +931,47 @@ mod tests {
             row,
             (None, None, None, None, None, None, None, Some("\"v1\"".to_string()))
         );
+    }
+
+    #[test]
+    fn get_feed_favicons_returns_only_stored_rows_across_chunks() {
+        let connection = setup_connection();
+        let total = FAVICON_QUERY_CHUNK_SIZE + 3;
+        let mut ids = Vec::with_capacity(total + 2);
+        for index in 0..total {
+            let id = format!("feed-{index}");
+            insert_feed(&connection, &id);
+            ids.push(id);
+        }
+        // Even rows get a favicon; odd rows stay empty (NULL) and one gets an empty string.
+        for index in (0..total).step_by(2) {
+            connection
+                .execute(
+                    "UPDATE feeds SET favicon = ?1, favicon_has_transparency = 1, favicon_bg_light = '#fff', favicon_bg_dark = '#000' WHERE id = ?2",
+                    params![format!("data:image/png;base64,{index}"), format!("feed-{index}")],
+                )
+                .expect("store favicon");
+        }
+        connection
+            .execute("UPDATE feeds SET favicon = '' WHERE id = 'feed-1'", [])
+            .expect("store empty favicon");
+        // Duplicates and unknown ids are tolerated.
+        ids.push("feed-0".to_string());
+        ids.push("missing".to_string());
+
+        let favicons = get_feed_favicons(&connection, &ids).expect("favicons");
+        let expected = (0..total).step_by(2).count();
+        assert_eq!(favicons.len(), expected);
+        let last = favicons
+            .iter()
+            .find(|row| row.id == format!("feed-{}", total - 1))
+            .expect("row past first chunk");
+        assert_eq!(last.favicon, format!("data:image/png;base64,{}", total - 1));
+        assert_eq!(last.favicon_has_transparency, Some(true));
+        assert_eq!(last.favicon_bg_light.as_deref(), Some("#fff"));
+        assert_eq!(last.favicon_bg_dark.as_deref(), Some("#000"));
+        assert!(favicons.iter().all(|row| row.id != "feed-1"));
+
+        assert!(get_feed_favicons(&connection, &[]).expect("empty").is_empty());
     }
 }

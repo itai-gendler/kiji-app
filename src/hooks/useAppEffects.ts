@@ -24,6 +24,7 @@ import {
   useUnmountEffect,
 } from '@/hooks/useLifecycleEffects';
 import { logger } from '@/services/logger';
+import { startRobustnessSummary } from '@/services/diagnostics/robustnessMetrics';
 import { subscribeToWindowFocus } from '@/services/tauri/tauriEventSubscription';
 import { appToastService } from '@/services/ui/appToastService';
 import { confirmDialog } from '@/services/ui/confirmDialogService';
@@ -112,6 +113,7 @@ export const useFeedSchedulerLifecycle = (enabled = true): void => {
 
     void feedScheduler.start();
     const releaseBackgroundWakeLock = startBackgroundSchedulerWakeLock();
+    const stopRobustnessSummary = startRobustnessSummary();
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
@@ -146,6 +148,7 @@ export const useFeedSchedulerLifecycle = (enabled = true): void => {
 
     return () => {
       releaseBackgroundWakeLock();
+      stopRobustnessSummary();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       removeFocusListener();
       if (typeof removeSettingsChangedListener === 'function') {

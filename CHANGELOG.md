@@ -20,6 +20,12 @@
 - Saving an article and quickly opening another no longer shows the first article in the new view.
 - Clearing all feeds or deleting a station with its feeds now updates the sidebar even if part of the cleanup fails.
 - Choosing a feed or station while KiJi's window is behind other windows (or when KiJi reopens your last selection in the background) now refreshes it right away, instead of pausing background updates for up to 10 minutes.
+- Feed icons in the sidebar show again after launch, without slowing down startup.
+- Feeds in Japanese, Chinese and other non-UTF-8 encodings now load instead of failing every time.
+- Background refresh no longer makes marking articles read or starred wait while large feeds are processed, and a failed save of a feed's new articles no longer leaves it half-updated.
+- Unread counts are now correct for each feed when two subscriptions share the same articles.
+- Clicking a station during a background refresh no longer delays refreshing the rest of your library.
+- Importing the same saved-articles file twice no longer creates duplicates; KiJi tells you how many were already saved. CSV files with quotes or commas in titles import correctly.
 
 ## [1.5.0] - 2026-10-16
 

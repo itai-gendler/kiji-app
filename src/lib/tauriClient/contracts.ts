@@ -79,6 +79,14 @@ export interface SidebarFeedRecord {
   lastFaviconRefresh: ISODateString | null;
 }
 
+export interface FeedFaviconRecord {
+  id: string;
+  favicon: string;
+  faviconHasTransparency: boolean | null;
+  faviconBgLight: string | null;
+  faviconBgDark: string | null;
+}
+
 export interface LibrarySidebarSnapshot {
   feeds: SidebarFeedRecord[];
   stations: TagRecord[];
@@ -818,6 +826,10 @@ export interface FeedsContract {
   librarySidebarSnapshot: {
     response: LibrarySidebarSnapshot;
   };
+  getFavicons: {
+    request: { ids: string[] };
+    response: FeedFaviconRecord[];
+  };
   get: {
     request: { id: string };
     response: FeedRecord | null;
@@ -1190,6 +1202,21 @@ export interface DiagnosticsContract {
   exportBundle: {
     response: { canceled: boolean; filePath: FilePathString | null };
   };
+  robustnessCounters: {
+    response: NativeRobustnessCounters;
+  };
+}
+
+/** Fixed Rust session counters (`src-tauri/src/diagnostics/robustness.rs`). */
+export interface NativeRobustnessCounters {
+  fetchCancelledNotRecorded: number;
+  chunkFeedsSkippedMissing: number;
+  backoffSaturated: number;
+  itemsWithoutIdentity: number;
+  bodyDecodedNonUtf8: number;
+  bodyDecodedLossy: number;
+  storeTransactionRollbacks: number;
+  savedImportSkippedExisting: number;
 }
 
 export interface TasksContract {

@@ -2,6 +2,7 @@ import { faviconFetcher } from '@/services/favicons/faviconFetcher';
 import { isPlaceholderFaviconDataUrl } from '@/services/favicons/faviconQuality';
 import { feedsManager } from '@/services/feeds/feedsManager';
 import { logger } from '@/services/logger';
+import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
 import { FAVICON_REFRESH_COOLDOWN_MS } from '@/constants';
 
 /**
@@ -38,6 +39,8 @@ export async function maybeRefreshFavicon(
     if (newFavicon && await isPlaceholderFaviconDataUrl(newFavicon)) {
       if (currentFaviconIsPlaceholder) {
         await feedsManager.clearStoredFavicon(feedId);
+        // Sidebar rows and the sidebar favicon cache follow bus patches only.
+        feedLibraryMutationBus.publishFeedPatched(feedId, { favicon: undefined });
       }
       return;
     }
@@ -46,6 +49,12 @@ export async function maybeRefreshFavicon(
       const updatedFeed = await feedsManager.applyFaviconResult(feedId, newFavicon);
       logger.info('faviconRefresh', 'Favicon updated', { feedId });
       if (updatedFeed) {
+        feedLibraryMutationBus.publishFeedPatched(feedId, {
+          favicon: updatedFeed.favicon,
+          faviconHasTransparency: updatedFeed.faviconHasTransparency,
+          faviconBgLight: updatedFeed.faviconBgLight,
+          faviconBgDark: updatedFeed.faviconBgDark,
+        });
         onChanged?.();
       }
       return;

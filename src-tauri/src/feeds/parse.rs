@@ -2,6 +2,7 @@ use crate::feeds::types::{
     NativeEnclosure, NativeFeedAuthor, NativeFeedItem, NativeFeedParsePreviewResponse,
     NativeMediaThumbnail,
 };
+use crate::diagnostics::robustness::{record_many, RobustnessCounter};
 use chrono::{DateTime, Utc};
 use feed_rs::model::{Entry, Link, MediaObject, Text};
 use feed_rs::parser::{self, generate_id};
@@ -38,6 +39,10 @@ pub fn parse_feed_preview(
         .enumerate()
         .map(|(index, entry)| convert_entry(entry, &feed_url, index))
         .collect::<Vec<_>>();
+    record_many(
+        RobustnessCounter::ItemsWithoutIdentity,
+        count_items_without_identity(&items),
+    );
 
     Ok(NativeFeedParsePreviewResponse {
         format: format_hint,
@@ -46,6 +51,14 @@ pub fn parse_feed_preview(
         parser_path: PARSER_PATH.to_string(),
         parity_gaps: KNOWN_PARITY_GAPS.iter().map(|gap| (*gap).to_string()).collect(),
     })
+}
+
+/// Items with neither link nor guid; their hash falls back to title/content.
+fn count_items_without_identity(items: &[NativeFeedItem]) -> u64 {
+    items
+        .iter()
+        .filter(|item| item.link.is_none() && item.guid.is_none())
+        .count() as u64
 }
 
 /// Same as feed-rs's default `generate_id`, except that when it would fall back
@@ -444,6 +457,19 @@ mod tests {
             generate_article_hash(&first.items[0]),
             generate_article_hash(&second.items[0])
         );
+    }
+
+    #[test]
+    fn counts_items_without_link_or_guid() {
+        let before = crate::diagnostics::robustness::snapshot().items_without_identity;
+        let preview = parse_feed_preview(
+            RSS_WITHOUT_LINK_OR_GUID.to_string(),
+            "https://example.com/feed.xml".to_string(),
+        )
+        .expect("rss parse");
+
+        assert_eq!(count_items_without_identity(&preview.items), 1);
+        assert!(crate::diagnostics::robustness::snapshot().items_without_identity > before);
     }
 
     #[test]

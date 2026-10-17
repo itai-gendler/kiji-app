@@ -9,6 +9,10 @@ import * as articleStore from '@/stores/articleStore';
 import * as feedStore from '@/stores/feedStore';
 import { logger } from '@/services/logger';
 import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
+import {
   cancelSourceSelectionRefreshSchedule,
   SOURCE_SELECTION_MIN_REFRESH_DELAY_MS,
 } from '@/services/feeds/sourceSelectionPaintGate';
@@ -196,6 +200,7 @@ describe('FeedContext scheduler refresh', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRobustnessMetricsForTests();
     localStorage.clear();
     latestContext = null;
     (feedStore.getCount as vi.Mock).mockResolvedValue(0);
@@ -277,6 +282,7 @@ describe('FeedContext scheduler refresh', () => {
       expect(Array.from(latestContext!.newArticleHashes)).toEqual(['hash-a2']);
       expect(latestContext!.articleListScrollRequest?.mode).toBe('top');
     });
+    expect(getRobustnessSnapshot().counters['feedContext.asyncPhaseFailed']).toBeUndefined();
   });
 
   it('refreshes the active feed from a native feeds-batch-updated event at cycle end', async () => {
@@ -874,6 +880,8 @@ describe('FeedContext scheduler refresh', () => {
       await waitForExpectation(() => {
         expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a2', 'hash-a1']);
       });
+      // Only the one failed query counts; the successful cycle adds nothing.
+      expect(getRobustnessSnapshot().counters['feedContext.asyncPhaseFailed']).toBe(1);
     });
 
     it('logs a failed station relevance lookup instead of rejecting the flush', async () => {
@@ -906,6 +914,7 @@ describe('FeedContext scheduler refresh', () => {
           expect.objectContaining({ sourceKey: 'tag:Tech' }),
         );
       });
+      expect(getRobustnessSnapshot().counters['feedContext.asyncPhaseFailed']).toBeGreaterThanOrEqual(1);
     });
 
     it('restores the non-search list when the search-exit re-query fails', async () => {
@@ -946,6 +955,7 @@ describe('FeedContext scheduler refresh', () => {
         'Search-exit list re-query failed',
         expect.objectContaining({ sourceKey: 'feed:feed-1' }),
       );
+      expect(getRobustnessSnapshot().counters['feedContext.asyncPhaseFailed']).toBe(1);
     });
   });
 });

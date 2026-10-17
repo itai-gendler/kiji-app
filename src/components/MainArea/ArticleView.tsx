@@ -15,6 +15,7 @@ import { sanitizeArticleHtmlStyles } from '@/services/articles/articleStyleSanit
 import { savedArticlesService } from '@/services/saved/savedArticlesService';
 import { feedsManager } from '@/services/feeds/feedsManager';
 import { logger } from '@/services/logger';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { appToastService } from '@/services/ui/appToastService';
 import { readerModeService, type ReaderModeContent } from '@/services/articles/readerModeService';
 import { useE2eArticleViewProbes } from '@/hooks/useE2eArticleViewProbes';
@@ -1248,7 +1249,10 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
     const targetHash = articleToShow.hash;
     const isTargetStillShown = () => currentArticleHashRef.current === targetHash;
     const applySavedPayloadToView = (saved: boolean, payload: ArticleListUpdatePayload) => {
-      if (!isTargetStillShown()) return;
+      if (!isTargetStillShown()) {
+        recordRobustnessEvent('ui.saveRaceViewUpdateSkipped');
+        return;
+      }
       setIsSaved(saved);
       setArticleToShow((prev) => (prev?.hash === targetHash ? { ...prev, ...payload } : prev));
     };

@@ -2,6 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import { feedsManager } from '@/services/feeds/feedsManager';
 import { getAllFeedMetadataCached } from '@/services/feeds/feedMetadataCache';
+import {
+  applySidebarFavicons,
+  hydrateSidebarFavicons,
+  needsSidebarFavicon,
+  rememberSidebarFavicon,
+} from '@/services/favicons/sidebarFaviconCache';
 import { logger } from '@/services/logger';
 import { articlesManager } from '@/services/articles/articlesManager';
 import {
@@ -36,6 +42,7 @@ interface Feed {
   faviconHasTransparency?: boolean;
   faviconBgLight?: string;
   faviconBgDark?: string;
+  faviconStored?: boolean;
   emoji?: string;
   sortOrder?: number;
 }
@@ -212,11 +219,26 @@ export const FeedList: React.FC<FeedListProps> = ({ showAddModal, onCloseAddModa
     };
   }, [loadFeeds]);
 
+  // Slim snapshot rows carry only `faviconStored`; fetch blobs for painted rows after
+  // first paint in one coalesced IPC (see sidebarFaviconCache).
+  useEffect(() => {
+    if (!feeds.some(needsSidebarFavicon)) return;
+    let cancelled = false;
+    void hydrateSidebarFavicons(feeds).then((hydrated) => {
+      if (cancelled || hydrated.size === 0) return;
+      setFeeds((current) => applySidebarFavicons(current, hydrated));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [feeds]);
+
   useEffect(() => {
     if (!feedFaviconRefreshed) return;
     const { feedId } = feedFaviconRefreshed;
     feedsManager.getFeedById(feedId).then((updated) => {
       if (!updated) return;
+      rememberSidebarFavicon(updated);
       setFeeds((prev) =>
         prev.map((f) => f.id === feedId ? { ...f, favicon: updated.favicon, faviconHasTransparency: updated.faviconHasTransparency, faviconBgLight: updated.faviconBgLight, faviconBgDark: updated.faviconBgDark } : f)
       );

@@ -1,6 +1,7 @@
 use crate::db::{
     get_feeds_by_ids, list_scheduler_feed_entries, update_feed, DbState, FeedRecord, FeedUpdate,
 };
+use crate::diagnostics::robustness::{record, record_many, RobustnessCounter};
 use crate::feeds::{store_parsed_feed_content, StoreParsedFeedRequest};
 use crate::net::{feeds_abort_request, fetch_with_cache, FeedFetchWithCacheRequest};
 use crate::scheduler::run_plan::{
@@ -325,7 +326,7 @@ async fn refresh_single_feed_native(
         Err(error) => {
             // A cycle cancel aborts in-flight requests; that is not a feed
             // failure and must not push a healthy feed into backoff.
-            if should_record_feed_failure(&error) {
+            if classify_fetch_error(&error) {
                 record_feed_failure(db, &feed, &error).await?;
             }
             return Err(error);
@@ -348,8 +349,10 @@ async fn refresh_single_feed_native(
         .data
         .ok_or_else(|| "Feed fetch returned empty body.".to_string())?;
 
-    // One short write transaction per feed keeps the writer available between
-    // feeds, so UI writes never wait for the whole cycle.
+    // Parsing runs on the blocking pool without the writer lock; only the
+    // inserts + feed update + count sync take the writer, as ONE transaction
+    // per feed. UI writes (mark read, star) never queue behind XML parsing or
+    // the whole cycle, and a failed store leaves no partial state.
     let store_request = StoreParsedFeedRequest {
         feed_id: feed.id.clone(),
         feed_url: feed.url.clone(),
@@ -365,10 +368,7 @@ async fn refresh_single_feed_native(
         last_fetched: Some(current_time_rfc3339()),
         previous_update_frequency_score: Some(feed.update_frequency_score),
     };
-    let stored = match db
-        .write(move |connection| store_parsed_feed_content(connection, store_request))
-        .await
-    {
+    let stored = match store_parsed_feed_content(db, store_request).await {
         Ok(response) => response,
         Err(error) => {
             record_feed_failure(db, &feed, &error).await?;
@@ -388,7 +388,7 @@ fn resolve_chunk_feeds<'a>(
     chunk: &'a [FeedPriorityEntry],
     feeds_by_id: &HashMap<String, FeedRecord>,
 ) -> Vec<(&'a FeedPriorityEntry, FeedRecord)> {
-    chunk
+    let resolved: Vec<_> = chunk
         .iter()
         .filter_map(|entry| match feeds_by_id.get(&entry.entry.feed_id) {
             Some(feed) => Some((entry, feed.clone())),
@@ -400,7 +400,22 @@ fn resolve_chunk_feeds<'a>(
                 None
             }
         })
-        .collect()
+        .collect();
+    record_many(
+        RobustnessCounter::ChunkFeedsSkippedMissing,
+        (chunk.len() - resolved.len()) as u64,
+    );
+    resolved
+}
+
+/// Decides whether a fetch error counts as a feed failure, recording the
+/// cancel-not-failure invariant when it does not.
+fn classify_fetch_error(error: &str) -> bool {
+    let should_record = should_record_feed_failure(error);
+    if !should_record {
+        record(RobustnessCounter::FetchCancelledNotRecorded);
+    }
+    should_record
 }
 
 /// Fetch errors are `FeedCommandError` JSON; a `FEED_REQUEST_CANCELLED` code
@@ -616,6 +631,21 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_fetch_records_cancel_counter_only() {
+        use crate::diagnostics::robustness::snapshot;
+        let cancelled = r#"{"code":"FEED_REQUEST_CANCELLED","message":"Feed request was cancelled."}"#;
+        let before = snapshot().fetch_cancelled_not_recorded;
+        assert!(!classify_fetch_error(cancelled));
+        assert!(!classify_fetch_error(cancelled));
+        let after_cancel = snapshot().fetch_cancelled_not_recorded;
+        assert!(
+            after_cancel >= before + 2,
+            "each cancelled fetch must bump FetchCancelledNotRecorded"
+        );
+        assert!(classify_fetch_error(r#"{"code":"FEED_HTTP_STATUS"}"#));
+    }
+
+    #[test]
     fn other_fetch_errors_record_feed_failure() {
         let http = r#"{"code":"FEED_HTTP_STATUS","message":"HTTP request failed with status 404 Not Found.","httpStatus":404}"#;
         assert!(should_record_feed_failure(http));
@@ -660,5 +690,26 @@ mod tests {
             .map(|(entry, feed)| (entry.entry.feed_id.as_str(), feed.id.as_str()))
             .collect();
         assert_eq!(ids, vec![("feed-1", "feed-1"), ("feed-3", "feed-3")]);
+    }
+
+    #[test]
+    fn resolve_chunk_feeds_records_skipped_missing_count() {
+        use crate::diagnostics::robustness::snapshot;
+        let chunk = vec![
+            priority_entry("gone-1"),
+            priority_entry("feed-1"),
+            priority_entry("gone-2"),
+        ];
+        let mut feeds_by_id = HashMap::new();
+        feeds_by_id.insert("feed-1".to_string(), feed_with_headers(None, None));
+
+        let before = snapshot().chunk_feeds_skipped_missing;
+        let resolved = resolve_chunk_feeds(&chunk, &feeds_by_id);
+        let after = snapshot().chunk_feeds_skipped_missing;
+        assert_eq!(resolved.len(), 1);
+        assert!(
+            after >= before + 2,
+            "two missing feeds must add 2 to ChunkFeedsSkippedMissing"
+        );
     }
 }

@@ -16,6 +16,7 @@ import {
   resolveOutlineStationName,
 } from '@/services/feeds/opmlStationResolution';
 import { filenameService } from '@/services/text/filenameService';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { tauriClient } from '@/lib/tauriClient';
 import {
   HELPER_TASK_KIND,
@@ -52,47 +53,100 @@ const turndown = new TurndownService({
 type ImportedSavedArticle = SavedArticlesImportTaskResult['articles'][number];
 
 const parseGenericCsvForUrls = (csvText: string): string[] => {
-  const lines = csvText.split(/\r?\n/);
-  if (lines.length < 1) return [];
-
-  const headerRow = lines[0].toLowerCase().split(',');
-  const urlIndex = headerRow.findIndex((header) => header.trim().includes('url'));
+  const [headerRow = [], ...rows] = parseCsvRecords(csvText);
+  const urlIndex = headerRow.findIndex((header) => header.trim().toLowerCase().includes('url'));
 
   if (urlIndex === -1) {
     throw new Error("CSV must have a 'url' column");
   }
 
   const urls: string[] = [];
-  for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (!line) continue;
-
-    const matches = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
-    if (!matches) continue;
-
-    const values = matches.map((value) => value.replace(/^"|"$/g, '').replace(/""/g, '"'));
-    if (values[urlIndex]) {
-      urls.push(values[urlIndex].trim());
+  for (const record of rows) {
+    const url = record[urlIndex]?.trim();
+    if (url) {
+      urls.push(url);
     }
   }
   return urls;
 };
 
+/**
+ * RFC 4180 CSV records: quoted fields may contain commas, CR/LF and doubled
+ * quotes (`""`). Unquoted fields are taken verbatim; CRLF and LF both end a
+ * record. Single pass, no regex backtracking.
+ */
+export const parseCsvRecords = (csvText: string): string[][] => {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  let index = 0;
+  const text = csvText.charCodeAt(0) === 0xfeff ? csvText.slice(1) : csvText;
+
+  const endField = () => {
+    record.push(field);
+    field = '';
+  };
+  const endRecord = () => {
+    endField();
+    records.push(record);
+    record = [];
+  };
+
+  while (index < text.length) {
+    const char = text[index];
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[index + 1] === '"') {
+          field += '"';
+          index += 2;
+          continue;
+        }
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (char === '"' && field.trim().length === 0) {
+      // Tolerate whitespace before an opening quote (`a, "b"`).
+      field = '';
+      inQuotes = true;
+    } else if (char === ',') {
+      endField();
+    } else if (char === '\n' || char === '\r') {
+      endRecord();
+      if (char === '\r' && text[index + 1] === '\n') {
+        index += 1;
+      }
+    } else {
+      field += char;
+    }
+    index += 1;
+  }
+
+  if (field.length > 0 || record.length > 0) {
+    endRecord();
+  }
+  return records;
+};
+
+const isBlankCsvRecord = (record: string[]): boolean => (
+  record.every((value) => value.trim().length === 0)
+);
+
 const parsePocketCsv = (csvText: string): ImportedSavedArticle[] => {
-  const lines = csvText.split(/\r?\n/);
+  const [header, ...rows] = parseCsvRecords(csvText);
   const results: ImportedSavedArticle[] = [];
-  const header = lines[0]?.split(',');
 
   if (!header || header.length < 2) return [];
 
-  for (let index = 1; index < lines.length; index += 1) {
-    const line = lines[index].trim();
-    if (!line) continue;
+  for (const record of rows) {
+    if (isBlankCsvRecord(record)) continue;
 
-    const matches = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
-    if (!matches) continue;
-
-    const values = matches.map((value) => value.replace(/^"|"$/g, '').replace(/""/g, '"'));
+    const values = record.map((value) => value.trim());
     if (values.length < 2) continue;
 
     results.push({
@@ -372,15 +426,27 @@ const importSavedArticlesTask = async (
   const articlesFolder = zip.folder('articles');
 
   if (articlesFolder) {
+    let matched = 0;
+    let legacyFallback = 0;
+    let missing = 0;
     const usedNames = new Map<string, number>();
     for (const article of articles) {
       // Rows are walked in CSV order, which is the order the exporter wrote the
       // .md files, so duplicate titles resolve to their own `-N` file. Fall back
       // to the legacy renderer-export name for older archives.
       const fileName = nextExportedMarkdownFileName(article.title, usedNames);
-      const mdFile = articlesFolder.file(fileName)
+      const exporterFile = articlesFolder.file(fileName);
+      const mdFile = exporterFile
         ?? articlesFolder.file(`${filenameService.sanitizeFilename(article.title)}.md`);
-      if (!mdFile) continue;
+      if (!mdFile) {
+        missing += 1;
+        continue;
+      }
+      if (exporterFile) {
+        matched += 1;
+      } else {
+        legacyFallback += 1;
+      }
 
       const mdText = await mdFile.async('text');
       const parts = mdText.split('---\n\n');
@@ -388,6 +454,12 @@ const importSavedArticlesTask = async (
         article.content = parts.slice(1).join('---\n\n').trim();
       }
     }
+
+    // Helper tasks run in the renderer (InProcessExecutionBackend), so these
+    // land in the same session counters as the rest of the import.
+    recordRobustnessEvent('savedZip.markdownMatched', matched);
+    recordRobustnessEvent('savedZip.markdownLegacyFallback', legacyFallback);
+    recordRobustnessEvent('savedZip.markdownMissing', missing);
   }
 
   return { articles };

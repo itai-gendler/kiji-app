@@ -58,7 +58,9 @@ const loadFreshModules = async () => {
   vi.resetModules();
   const { FeedEditView } = await import('@/components/MainArea/FeedEditView');
   const { feedLibraryMutationBus } = await import('@/services/ui/feedLibraryMutationBus');
-  return { FeedEditView, feedLibraryMutationBus };
+  // Same fresh instance FeedEditView records into.
+  const { getRobustnessSnapshot } = await import('@/services/diagnostics/robustnessMetrics');
+  return { FeedEditView, feedLibraryMutationBus, getRobustnessSnapshot };
 };
 
 const feeds = [
@@ -83,7 +85,7 @@ describe('FeedEditView delete station with feeds partial failure', () => {
 
   it('publishes the committed feed deletion even when the station delete rejects', async () => {
     mocks.deleteTag.mockRejectedValue(new Error('station delete failed'));
-    const { FeedEditView, feedLibraryMutationBus } = await loadFreshModules();
+    const { FeedEditView, feedLibraryMutationBus, getRobustnessSnapshot } = await loadFreshModules();
     const publishFeedDeleted = vi.spyOn(feedLibraryMutationBus, 'publishFeedDeleted');
     const publishStationPatched = vi.spyOn(feedLibraryMutationBus, 'publishStationPatched');
     const publishStationDeleted = vi.spyOn(feedLibraryMutationBus, 'publishStationDeleted');
@@ -105,11 +107,12 @@ describe('FeedEditView delete station with feeds partial failure', () => {
       name: 'News',
       feedIds: ['feed-shared'],
     }));
+    expect(getRobustnessSnapshot().counters['ui.deleteFlowPartialFailure']).toBe(1);
   });
 
   it('publishes feed and station deletion on success', async () => {
     mocks.deleteTag.mockResolvedValue(undefined);
-    const { FeedEditView, feedLibraryMutationBus } = await loadFreshModules();
+    const { FeedEditView, feedLibraryMutationBus, getRobustnessSnapshot } = await loadFreshModules();
     const publishFeedDeleted = vi.spyOn(feedLibraryMutationBus, 'publishFeedDeleted');
     const publishStationDeleted = vi.spyOn(feedLibraryMutationBus, 'publishStationDeleted');
 
@@ -125,5 +128,6 @@ describe('FeedEditView delete station with feeds partial failure', () => {
     ));
     expect(publishFeedDeleted).toHaveBeenCalledWith('feed-only-news');
     expect(mocks.toastShow).not.toHaveBeenCalled();
+    expect(getRobustnessSnapshot().counters['ui.deleteFlowPartialFailure']).toBeUndefined();
   });
 });

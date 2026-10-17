@@ -18,6 +18,7 @@ import {
 } from '@/services/feeds/opmlUiWorkflow';
 import { openAboutWindow } from '@/services/system/appUpdateService';
 import { logger } from '@/services/logger';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { savedArticlesIOService } from '@/services/saved/savedArticlesIOService';
 import { savedArticlesService } from '@/services/saved/savedArticlesService';
 import { appToastService } from '@/services/ui/appToastService';
@@ -144,6 +145,7 @@ export const useApplicationMenuCommands = ({
       notifyFeedLibraryChanged();
       await refreshTotalFeeds();
       if (stationDeleteError) {
+        recordRobustnessEvent('ui.deleteFlowPartialFailure');
         throw stationDeleteError;
       }
       sidebarIndicatorService.show(

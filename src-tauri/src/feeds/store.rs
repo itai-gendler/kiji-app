@@ -10,7 +10,8 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::DbState;
+use crate::db::{with_savepoint, DbState};
+use crate::diagnostics::robustness::{record, RobustnessCounter};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -44,10 +45,25 @@ pub struct StoreParsedFeedResponse {
     pub parity_gaps: Vec<String>,
 }
 
-pub fn store_parsed_feed_content(
-    connection: &Connection,
+/// Parsed + converted feed content, ready for the writer. Produced off the
+/// writer lock so XML parsing (bodies up to 32 MB) never queues UI writes.
+#[derive(Debug, Clone)]
+struct PreparedFeedStore {
+    feed_id: String,
+    articles: Vec<ArticleRecord>,
+    parsed_item_count: usize,
+    parser_path: String,
+    parity_gaps: Vec<String>,
+    update_frequency_score: Option<f64>,
+    last_fetched: String,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
+
+/// Pure step: parse and convert without touching the database.
+fn prepare_parsed_feed_content(
     request: StoreParsedFeedRequest,
-) -> Result<StoreParsedFeedResponse, String> {
+) -> Result<PreparedFeedStore, String> {
     let preview = parse_feed_preview(request.raw_text, request.feed_url.clone())?;
     let fetch_time = request
         .last_fetched
@@ -68,70 +84,131 @@ pub fn store_parsed_feed_content(
     };
 
     let articles = convert_feed_items_to_articles(&preview.items, &context);
-    let inserted_count = if articles.is_empty() {
-        0
-    } else {
-        insert_articles_batch(connection, &articles)?
-    };
-
     let update_frequency_score = derive_update_frequency_score(
         &articles,
         request.previous_update_frequency_score,
     );
 
-    let last_fetched = fetch_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    update_feed(
-        connection,
-        &request.feed_id,
-        FeedUpdate {
-            last_fetched: Some(Some(last_fetched)),
-            last_failed_fetch_at: Some(None),
-            consecutive_failures: Some(0),
-            etag: request.etag.map(Some),
-            last_modified_header: request.last_modified.map(Some),
-            update_frequency_score,
-            title: None,
-            url: None,
-            created_at: None,
-            description: None,
-            unread_count: None,
-            article_count: None,
-            tags: None,
-            favicon: None,
-            favicon_has_transparency: None,
-            favicon_dominant_color: None,
-            favicon_bg_light: None,
-            favicon_bg_dark: None,
-            favicon_fetch_failed: None,
-            emoji: None,
-            image: None,
-            categories: None,
-            language: None,
-            is_podcast: None,
-            podcast_metadata: None,
-            reader_mode_enabled: None,
-            sort_order: None,
-            last_favicon_refresh: None,
-        },
-    )?;
+    Ok(PreparedFeedStore {
+        feed_id: request.feed_id,
+        articles,
+        parsed_item_count: preview.item_count,
+        parser_path: preview.parser_path,
+        parity_gaps: preview.parity_gaps,
+        update_frequency_score,
+        last_fetched: fetch_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        etag: request.etag,
+        last_modified: request.last_modified,
+    })
+}
 
-    let counts = sync_feed_article_counts_batch(connection, &[request.feed_id.clone()])?;
-    let (unread_count, article_count) = counts
-        .first()
-        .map(|entry| (entry.unread_count, entry.article_count))
-        .unwrap_or((0, 0));
+/// Writer step: article inserts, feed metadata (etag/last_modified) and count
+/// sync commit together in ONE transaction, so a failure can never leave
+/// articles without counts or — worse — an advanced etag without articles
+/// (the next conditional GET would 304 and the items would be lost).
+fn write_prepared_feed_content(
+    connection: &Connection,
+    prepared: PreparedFeedStore,
+) -> Result<StoreParsedFeedResponse, String> {
+    let PreparedFeedStore {
+        feed_id,
+        articles,
+        parsed_item_count,
+        parser_path,
+        parity_gaps,
+        update_frequency_score,
+        last_fetched,
+        etag,
+        last_modified,
+    } = prepared;
+
+    let result = with_savepoint(connection, "store_parsed_feed", |connection| {
+        // Articles first, then etag: order is kept inside the transaction too.
+        let inserted_count = if articles.is_empty() {
+            0
+        } else {
+            insert_articles_batch(connection, &articles)?
+        };
+
+        update_feed(
+            connection,
+            &feed_id,
+            FeedUpdate {
+                last_fetched: Some(Some(last_fetched)),
+                last_failed_fetch_at: Some(None),
+                consecutive_failures: Some(0),
+                etag: etag.map(Some),
+                last_modified_header: last_modified.map(Some),
+                update_frequency_score,
+                title: None,
+                url: None,
+                created_at: None,
+                description: None,
+                unread_count: None,
+                article_count: None,
+                tags: None,
+                favicon: None,
+                favicon_has_transparency: None,
+                favicon_dominant_color: None,
+                favicon_bg_light: None,
+                favicon_bg_dark: None,
+                favicon_fetch_failed: None,
+                emoji: None,
+                image: None,
+                categories: None,
+                language: None,
+                is_podcast: None,
+                podcast_metadata: None,
+                reader_mode_enabled: None,
+                sort_order: None,
+                last_favicon_refresh: None,
+            },
+        )?;
+
+        let counts = sync_feed_article_counts_batch(connection, &[feed_id.clone()])?;
+        let (unread_count, article_count) = counts
+            .first()
+            .map(|entry| (entry.unread_count, entry.article_count))
+            .unwrap_or((0, 0));
+        Ok((inserted_count, unread_count, article_count))
+    });
+
+    let (inserted_count, unread_count, article_count) = match result {
+        Ok(values) => values,
+        Err(error) => {
+            record(RobustnessCounter::StoreTransactionRollbacks);
+            return Err(error);
+        }
+    };
 
     Ok(StoreParsedFeedResponse {
-        feed_id: request.feed_id,
+        feed_id,
         inserted_count,
-        parsed_item_count: preview.item_count,
+        parsed_item_count,
         update_frequency_score,
         unread_count,
         article_count,
         consecutive_failures: 0,
-        parser_path: preview.parser_path,
-        parity_gaps: preview.parity_gaps,
+        parser_path,
+        parity_gaps,
     })
+}
+
+/// Parses on the blocking pool without the writer lock, then takes the writer
+/// only for the short per-feed transaction. Parse errors never touch the
+/// writer, and concurrent cycle feeds parse in parallel instead of
+/// serializing on the writer mutex.
+pub async fn store_parsed_feed_content(
+    db: &DbState,
+    request: StoreParsedFeedRequest,
+) -> Result<StoreParsedFeedResponse, String> {
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        prepare_parsed_feed_content(request)
+    })
+    .await
+    .map_err(|error| format!("Feed parse task failed: {error}"))??;
+    db.write(move |connection| write_prepared_feed_content(connection, prepared))
+        .await
 }
 
 fn derive_update_frequency_score(
@@ -161,19 +238,27 @@ pub async fn feeds_store_parsed_content(
     state: State<'_, DbState>,
 ) -> Result<StoreParsedFeedResponse, String> {
     let db = state.inner().clone();
-    db.write(move |connection| store_parsed_feed_content(connection, request))
-        .await
+    store_parsed_feed_content(&db, request).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::store_parsed_feed_content as store_parsed_feed_content_async;
     use crate::db::feeds::insert_feed;
     use crate::db::schema::CREATE_SEARCH_INDEXES;
     use crate::db::{run_migrations, FeedRecord};
     use rusqlite::Connection;
     use std::fs;
     use std::path::PathBuf;
+
+    /// Parse + write on one connection, for repository-level assertions.
+    fn store_parsed_feed_content(
+        connection: &Connection,
+        request: StoreParsedFeedRequest,
+    ) -> Result<StoreParsedFeedResponse, String> {
+        write_prepared_feed_content(connection, prepare_parsed_feed_content(request)?)
+    }
 
     fn open_test_connection() -> Connection {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
@@ -397,6 +482,141 @@ mod tests {
             )
             .expect("count mappings");
         assert_eq!(mapping_count, 2);
+    }
+
+    fn minimal_request(feed_id: &str, etag: Option<&str>) -> StoreParsedFeedRequest {
+        StoreParsedFeedRequest {
+            feed_id: feed_id.to_string(),
+            feed_url: "https://example.com/rss.xml".to_string(),
+            raw_text: MINIMAL_RSS.to_string(),
+            feed_title: Some("Example".to_string()),
+            feed_favicon: None,
+            feed_favicon_has_transparency: None,
+            feed_favicon_bg_light: None,
+            feed_favicon_bg_dark: None,
+            feed_image: None,
+            etag: etag.map(str::to_string),
+            last_modified: Some("Mon, 22 Jun 2026 00:00:00 GMT".to_string()),
+            last_fetched: Some("2026-06-22T12:00:00.000Z".to_string()),
+            previous_update_frequency_score: None,
+        }
+    }
+
+    fn read_feed_state(connection: &Connection, feed_id: &str) -> (Option<String>, i64, i64) {
+        connection
+            .query_row(
+                "SELECT etag, consecutive_failures, \
+                 (SELECT COUNT(*) FROM articles) + (SELECT COUNT(*) FROM article_feed_items) \
+                 FROM feeds WHERE id = ?1",
+                rusqlite::params![feed_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read feed state")
+    }
+
+    #[test]
+    fn failure_after_inserts_rolls_back_articles_and_etag_together() {
+        use crate::diagnostics::robustness::snapshot;
+        let connection = open_test_connection();
+        insert_test_feed(&connection, "feed-1", "https://example.com/rss.xml");
+        connection
+            .execute("UPDATE feeds SET etag = 'etag-old' WHERE id = 'feed-1'", [])
+            .expect("seed etag");
+        // Inject a failure at the last step (count sync), after the article
+        // inserts and the etag/last_modified update already ran.
+        connection
+            .execute_batch(
+                "CREATE TRIGGER inject_count_failure BEFORE UPDATE OF unread_count ON feeds \
+                 BEGIN SELECT RAISE(ABORT, 'injected count failure'); END;",
+            )
+            .expect("install failure trigger");
+
+        let before = snapshot().store_transaction_rollbacks;
+        let error = store_parsed_feed_content(&connection, minimal_request("feed-1", Some("etag-new")))
+            .expect_err("injected failure must surface");
+        assert!(error.contains("injected count failure"), "{error}");
+        assert!(snapshot().store_transaction_rollbacks > before);
+
+        let (etag, consecutive_failures, stored_rows) = read_feed_state(&connection, "feed-1");
+        assert_eq!(etag.as_deref(), Some("etag-old"), "etag must not advance without articles");
+        assert_eq!(consecutive_failures, 2, "feed update must roll back too");
+        assert_eq!(stored_rows, 0, "no articles or mappings may survive the rollback");
+        assert!(connection.is_autocommit(), "rollback must close the transaction");
+
+        connection
+            .execute_batch("DROP TRIGGER inject_count_failure")
+            .expect("drop failure trigger");
+        let response = store_parsed_feed_content(&connection, minimal_request("feed-1", Some("etag-new")))
+            .expect("store succeeds after the failure is removed");
+        assert_eq!(response.inserted_count, 2);
+    }
+
+    #[test]
+    fn successful_store_commits_articles_and_etag_together() {
+        let path = std::env::temp_dir().join(format!(
+            "kiji-store-commit-{}-{}.db",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        {
+            let mut writer = Connection::open(&path).expect("open file database");
+            run_migrations(&mut writer).expect("run migrations");
+            insert_test_feed(&writer, "feed-1", "https://example.com/rss.xml");
+            let response =
+                store_parsed_feed_content(&writer, minimal_request("feed-1", Some("etag-1")))
+                    .expect("store parsed feed");
+            assert_eq!(response.inserted_count, 2);
+            assert!(writer.is_autocommit(), "store must commit, not leave a transaction open");
+
+            // A second connection only sees committed data.
+            let observer = Connection::open(&path).expect("open observer");
+            let (etag, consecutive_failures, stored_rows) = read_feed_state(&observer, "feed-1");
+            assert_eq!(etag.as_deref(), Some("etag-1"));
+            assert_eq!(consecutive_failures, 0);
+            assert_eq!(stored_rows, 4, "2 articles + 2 mappings committed with the etag");
+        }
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    #[test]
+    fn parse_error_returns_without_taking_the_writer() {
+        let mut writer = Connection::open_in_memory().expect("open writer");
+        run_migrations(&mut writer).expect("run migrations");
+        let db = DbState::for_tests(writer);
+
+        // Hold the writer for the whole call, as a long store or VACUUM would.
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder_db = db.clone();
+        let holder = std::thread::spawn(move || {
+            holder_db
+                .with_writer(|_| {
+                    locked_tx.send(()).expect("announce writer held");
+                    let _ = release_rx.recv();
+                    Ok(())
+                })
+                .expect("hold writer");
+        });
+        locked_rx.recv().expect("writer held");
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let store_db = db.clone();
+        std::thread::spawn(move || {
+            let mut request = minimal_request("feed-1", Some("etag-1"));
+            request.raw_text = "this is not a feed".to_string();
+            let result = tauri::async_runtime::block_on(store_parsed_feed_content_async(
+                &store_db, request,
+            ));
+            let _ = result_tx.send(result);
+        });
+
+        let outcome = result_rx.recv_timeout(std::time::Duration::from_secs(5));
+        release_tx.send(()).expect("release writer");
+        holder.join().expect("join writer holder");
+        let result = outcome.expect("parse error must not wait for the writer");
+        assert!(result.is_err(), "invalid XML must fail to parse");
     }
 
     #[test]

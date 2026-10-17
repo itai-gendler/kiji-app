@@ -2236,6 +2236,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "chrono",
+ "encoding_rs",
  "feed-rs",
  "futures-util",
  "html2md",

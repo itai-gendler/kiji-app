@@ -34,6 +34,10 @@ vi.mock('@/services/ui/sidebarIndicatorService', () => ({
 import { useApplicationMenuCommands } from '@/hooks/useApplicationMenuCommands';
 import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
 import { sidebarIndicatorFailed } from '@/services/ui/sidebarIndicatorText';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
 
 type MenuCommandHandler = (command: { type: string }) => void;
 
@@ -42,6 +46,7 @@ describe('useApplicationMenuCommands clearFeeds partial failure', () => {
   const originalKijiApi = window.kijiAPI;
 
   beforeEach(() => {
+    resetRobustnessMetricsForTests();
     menuHandler = null;
     (window as unknown as { kijiAPI: unknown }).kijiAPI = {
       onAppMenuCommand: (handler: MenuCommandHandler) => {
@@ -117,6 +122,7 @@ describe('useApplicationMenuCommands clearFeeds partial failure', () => {
     expect(mocks.indicatorShow.mock.calls.at(-1)?.[0]).toBe(
       sidebarIndicatorFailed('clearing', { subject: 'feeds' }),
     );
+    expect(getRobustnessSnapshot().counters['ui.deleteFlowPartialFailure']).toBe(1);
   });
 
   it('publishes an empty library on full success', async () => {
@@ -127,5 +133,6 @@ describe('useApplicationMenuCommands clearFeeds partial failure', () => {
 
     expect(hydrate).toHaveBeenCalledWith({ stations: [], unstationed: [] });
     expect(clearFeedSelection).toHaveBeenCalledTimes(1);
+    expect(getRobustnessSnapshot().counters['ui.deleteFlowPartialFailure']).toBeUndefined();
   });
 });

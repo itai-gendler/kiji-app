@@ -323,9 +323,170 @@ async fn read_html_safe_body(response: reqwest::Response) -> Result<(ResourceTyp
         body.extend_from_slice(&chunk);
     }
 
-    let html = String::from_utf8(body)
-        .map_err(|error| format!("Failed to decode HTML response body: {error}"))?;
+    let html = decode_body_text(body, None, BodyKind::Html);
     Ok((ResourceType::Html, html))
+}
+
+const XML_DECLARATION_SNIFF_BYTES: usize = 1024;
+const HTML_META_SNIFF_BYTES: usize = 2048;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyKind {
+    Xml,
+    Html,
+}
+
+/// Decodes an HTTP body to UTF-8. Precedence: BOM, Content-Type charset,
+/// in-document declaration (XML declaration / HTML meta), then UTF-8.
+/// Never fails: malformed sequences become U+FFFD. For XML, a declaration
+/// naming a non-UTF-8 encoding is rewritten to UTF-8 because the returned
+/// text is UTF-8 and feed-rs (quick-xml `encoding`) would otherwise re-decode
+/// it with the stale declared encoding.
+fn decode_body_text(body: Vec<u8>, content_type: Option<&str>, kind: BodyKind) -> String {
+    use crate::diagnostics::robustness::{record, RobustnessCounter};
+
+    let (encoding, bom_len) = match encoding_rs::Encoding::for_bom(&body) {
+        Some((encoding, bom_len)) => (encoding, bom_len),
+        None => (
+            content_type
+                .and_then(charset_from_content_type)
+                .or_else(|| sniff_document_charset(&body, kind))
+                .unwrap_or(encoding_rs::UTF_8),
+            0,
+        ),
+    };
+
+    let (mut text, lossy) = if encoding == encoding_rs::UTF_8 {
+        let mut body = body;
+        body.drain(..bom_len);
+        match String::from_utf8(body) {
+            Ok(text) => (text, false),
+            Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+        }
+    } else {
+        let (text, had_errors) = encoding.decode_without_bom_handling(&body[bom_len..]);
+        (text.into_owned(), had_errors)
+    };
+
+    if encoding != encoding_rs::UTF_8 {
+        record(RobustnessCounter::BodyDecodedNonUtf8);
+    }
+    if lossy {
+        record(RobustnessCounter::BodyDecodedLossy);
+    }
+    if kind == BodyKind::Xml {
+        rewrite_xml_declaration_to_utf8(&mut text);
+    }
+    text
+}
+
+fn charset_from_content_type(content_type: &str) -> Option<&'static encoding_rs::Encoding> {
+    content_type.split(';').skip(1).find_map(|param| {
+        let (key, value) = param.split_once('=')?;
+        if !key.trim().eq_ignore_ascii_case("charset") {
+            return None;
+        }
+        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        encoding_rs::Encoding::for_label(value.as_bytes())
+    })
+}
+
+fn sniff_document_charset(body: &[u8], kind: BodyKind) -> Option<&'static encoding_rs::Encoding> {
+    let declared = match kind {
+        BodyKind::Xml => xml_declaration_encoding(body),
+        BodyKind::Html => html_meta_charset(body).or_else(|| xml_declaration_encoding(body)),
+    }?;
+    // A declaration we could read with an ASCII scan is not UTF-16 (WHATWG).
+    if declared == encoding_rs::UTF_16LE || declared == encoding_rs::UTF_16BE {
+        return Some(encoding_rs::UTF_8);
+    }
+    Some(declared)
+}
+
+fn xml_declaration_encoding(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    let (start, end) = xml_declaration_encoding_range(body)?;
+    encoding_rs::Encoding::for_label(&body[start..end])
+}
+
+/// Byte range of the `encoding` value inside a leading `<?xml ... ?>`.
+fn xml_declaration_encoding_range(body: &[u8]) -> Option<(usize, usize)> {
+    let head = &body[..body.len().min(XML_DECLARATION_SNIFF_BYTES)];
+    let offset = head.iter().position(|byte| !byte.is_ascii_whitespace())?;
+    let rest = &head[offset..];
+    if !rest.starts_with(b"<?xml") {
+        return None;
+    }
+    let declaration = &rest[..find_bytes(rest, b"?>")?];
+    let mut index = find_bytes(declaration, b"encoding")? + b"encoding".len();
+    let skip_whitespace = |mut index: usize| {
+        while declaration.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        index
+    };
+    index = skip_whitespace(index);
+    if declaration.get(index) != Some(&b'=') {
+        return None;
+    }
+    index = skip_whitespace(index + 1);
+    let quote = *declaration.get(index).filter(|byte| **byte == b'"' || **byte == b'\'')?;
+    let value_start = index + 1;
+    let value_len = declaration[value_start..].iter().position(|byte| *byte == quote)?;
+    Some((offset + value_start, offset + value_start + value_len))
+}
+
+fn html_meta_charset(body: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    let head = body[..body.len().min(HTML_META_SNIFF_BYTES)].to_ascii_lowercase();
+    let mut cursor = 0;
+    while let Some(meta_start) = find_bytes(&head[cursor..], b"<meta") {
+        let tag_start = cursor + meta_start;
+        let tag_end = find_bytes(&head[tag_start..], b">").map_or(head.len(), |end| tag_start + end);
+        let tag = &head[tag_start..tag_end];
+        cursor = tag_end;
+        // Covers both `<meta charset=x>` and `content="text/html; charset=x"`.
+        let Some(charset_at) = find_bytes(tag, b"charset") else {
+            continue;
+        };
+        let mut index = charset_at + b"charset".len();
+        while tag.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if tag.get(index) != Some(&b'=') {
+            continue;
+        }
+        index += 1;
+        while tag
+            .get(index)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\''))
+        {
+            index += 1;
+        }
+        let label = &tag[index..];
+        let label_len = label
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace() || matches!(byte, b'"' | b'\'' | b';' | b'/'))
+            .unwrap_or(label.len());
+        if let Some(encoding) = encoding_rs::Encoding::for_label(&label[..label_len]) {
+            return Some(encoding);
+        }
+    }
+    None
+}
+
+fn rewrite_xml_declaration_to_utf8(text: &mut String) {
+    let Some((start, end)) = xml_declaration_encoding_range(text.as_bytes()) else {
+        return;
+    };
+    let declared = encoding_rs::Encoding::for_label(&text.as_bytes()[start..end]);
+    if declared.is_some_and(|encoding| encoding != encoding_rs::UTF_8) {
+        text.replace_range(start..end, "UTF-8");
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn html_fetch_headers() -> HeaderMap {
@@ -393,10 +554,11 @@ async fn fetch_html_safe(url: String, timeout: Option<u64>) -> Result<FetchHtmlS
         });
     }
 
-    let html = response
-        .text()
+    let body = response
+        .bytes()
         .await
         .map_err(|error| format!("Failed to read HTTP response body: {error}"))?;
+    let html = decode_body_text(Vec::from(body), Some(&content_type), BodyKind::Html);
 
     Ok(FetchHtmlSafeResponse {
         resource_type: ResourceType::Html,
@@ -542,8 +704,8 @@ async fn execute_fetch(
         exceeded_soft_warn,
     );
 
-    let data = String::from_utf8(body)
-        .map_err(|error| format!("Failed to decode feed response body: {error}"))?;
+    let content_type = headers.get(CONTENT_TYPE).and_then(|value| value.to_str().ok());
+    let data = decode_body_text(body, content_type, BodyKind::Xml);
 
     Ok(FeedFetchWithCacheResponse {
         data: Some(data),
@@ -1083,5 +1245,189 @@ mod tests {
             Some("Tue, 22 Jun 2026 00:00:00 GMT")
         );
         assert_eq!(result.byte_length, Some(body.len()));
+    }
+
+    // --- body charset decoding ---
+
+    use crate::diagnostics::robustness::snapshot as robustness_snapshot;
+    use crate::feeds::feeds_parse_preview as parse_feed_preview;
+
+    const JA_TITLE: &str = "日本語のフィード";
+    const JA_ITEM: &str = "こんにちは世界";
+
+    fn ja_rss(declared_encoding: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="{declared_encoding}"?>
+<rss version="2.0"><channel><title>{JA_TITLE}</title><link>https://example.jp/</link>
+<item><title>{JA_ITEM}</title><link>https://example.jp/1</link></item>
+</channel></rss>"#
+        )
+    }
+
+    fn encode(encoding: &'static encoding_rs::Encoding, text: &str) -> Vec<u8> {
+        let (bytes, _, had_errors) = encoding.encode(text);
+        assert!(!had_errors, "fixture must be representable");
+        bytes.into_owned()
+    }
+
+    async fn serve_one_http_body(head: &str, body: Vec<u8>) -> std::net::SocketAddr {
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.write_all(&response).await;
+            }
+        });
+        addr
+    }
+
+    async fn fetch_feed_text(head: &str, body: Vec<u8>) -> Result<String, String> {
+        let addr = serve_one_http_body(head, body).await;
+        execute_fetch(FeedFetchWithCacheRequest {
+            url: format!("http://{addr}/feed.xml"),
+            request_id: None,
+            etag: None,
+            last_modified: None,
+            timeout: Some(5_000),
+        })
+        .await
+        .map(|response| response.data.expect("feed body"))
+    }
+
+    #[tokio::test]
+    async fn decodes_shift_jis_feed_from_content_type_charset() {
+        let before = robustness_snapshot();
+        let body = encode(encoding_rs::SHIFT_JIS, &ja_rss("Shift_JIS"));
+        let text = fetch_feed_text("Content-Type: application/rss+xml; charset=Shift_JIS\r\n", body)
+            .await
+            .expect("shift_jis feed decodes");
+
+        assert!(text.contains(JA_TITLE) && text.contains(JA_ITEM));
+        assert!(text.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
+        assert!(robustness_snapshot().body_decoded_non_utf8 > before.body_decoded_non_utf8);
+    }
+
+    #[test]
+    fn decodes_gbk_feed_declared_only_in_xml_declaration() {
+        let title = "中文订阅源";
+        let raw = format!(
+            "<?xml version='1.0' encoding='GBK'?><rss version=\"2.0\"><channel><title>{title}</title></channel></rss>"
+        );
+        let text = decode_body_text(
+            encode(encoding_rs::GBK, &raw),
+            Some("application/rss+xml"),
+            BodyKind::Xml,
+        );
+
+        assert!(text.contains(title));
+        assert!(text.starts_with("<?xml version='1.0' encoding='UTF-8'?>"));
+    }
+
+    #[tokio::test]
+    async fn fetch_html_safe_decodes_latin1_meta_charset() {
+        let html = encode(
+            encoding_rs::WINDOWS_1252,
+            r#"<html><head><meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1"><link rel="icon" href="/f.ico"></head><body>Café déjà vu</body></html>"#,
+        );
+        for head in ["Content-Type: text/html\r\n", ""] {
+            let addr = serve_one_http_body(head, html.clone()).await;
+            let response = fetch_html_safe(format!("http://{addr}/"), Some(5_000))
+                .await
+                .expect("latin-1 html decodes");
+            let decoded = response.html.expect("html body");
+            assert!(decoded.contains("Café déjà vu"), "head={head:?} got {decoded}");
+        }
+    }
+
+    #[tokio::test]
+    async fn utf8_feed_with_one_invalid_byte_decodes_lossily() {
+        let before = robustness_snapshot();
+        let mut body = b"<rss><channel><title>ok ".to_vec();
+        body.push(0xFF);
+        body.extend_from_slice(b" ok</title></channel></rss>");
+        let text = fetch_feed_text("Content-Type: application/rss+xml\r\n", body)
+            .await
+            .expect("lossy decode instead of error");
+
+        assert_eq!(text, "<rss><channel><title>ok \u{FFFD} ok</title></channel></rss>");
+        assert!(robustness_snapshot().body_decoded_lossy > before.body_decoded_lossy);
+    }
+
+    #[test]
+    fn plain_utf8_body_is_unchanged() {
+        let raw = ja_rss("utf-8");
+        assert_eq!(
+            decode_body_text(raw.clone().into_bytes(), Some("application/rss+xml; charset=utf-8"), BodyKind::Xml),
+            raw
+        );
+        let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+        with_bom.extend_from_slice(raw.as_bytes());
+        assert_eq!(decode_body_text(with_bom, None, BodyKind::Xml), raw);
+    }
+
+    #[test]
+    fn bom_wins_over_declared_charset() {
+        let raw = ja_rss("UTF-16");
+        let mut body = vec![0xFF, 0xFE];
+        for unit in raw.encode_utf16() {
+            body.extend_from_slice(&unit.to_le_bytes());
+        }
+        let text = decode_body_text(body, Some("text/xml; charset=iso-8859-1"), BodyKind::Xml);
+        assert_eq!(text, ja_rss("UTF-8"));
+    }
+
+    #[tokio::test]
+    async fn shift_jis_feed_parses_end_to_end_with_japanese_title() {
+        let body = encode(encoding_rs::SHIFT_JIS, &ja_rss("Shift_JIS"));
+        let text = fetch_feed_text("Content-Type: application/rss+xml; charset=Shift_JIS\r\n", body)
+            .await
+            .expect("shift_jis feed decodes");
+        let preview = parse_feed_preview(text, "https://example.jp/feed".to_string())
+            .expect("decoded feed parses");
+
+        assert_eq!(preview.items[0].title, JA_ITEM);
+    }
+
+    #[test]
+    fn feed_rs_honours_stale_declaration_on_utf8_text() {
+        // Why the declaration is rewritten: feed-rs (quick-xml `encoding`)
+        // re-decodes UTF-8 text with the declared encoding.
+        let stale = parse_feed_preview(ja_rss("Shift_JIS"), "https://example.jp/feed".to_string());
+        assert!(stale.map_or(true, |preview| preview.items[0].title != JA_ITEM));
+
+        let mut rewritten = ja_rss("Shift_JIS");
+        rewrite_xml_declaration_to_utf8(&mut rewritten);
+        let preview = parse_feed_preview(rewritten, "https://example.jp/feed".to_string())
+            .expect("rewritten declaration parses");
+        assert_eq!(preview.items[0].title, JA_ITEM);
+    }
+
+    #[test]
+    fn charset_sniffing_helpers() {
+        assert_eq!(
+            charset_from_content_type("text/xml; Charset=\"EUC-JP\""),
+            Some(encoding_rs::EUC_JP)
+        );
+        assert_eq!(charset_from_content_type("text/xml"), None);
+        assert_eq!(
+            html_meta_charset(b"<html><head><META CHARSET=big5>"),
+            Some(encoding_rs::BIG5)
+        );
+        assert_eq!(html_meta_charset(b"<meta name=\"charset\">"), None);
+        // In-document UTF-16 labels on ASCII-readable bytes mean UTF-8.
+        assert_eq!(
+            sniff_document_charset(b"<meta charset=\"utf-16\">", BodyKind::Html),
+            Some(encoding_rs::UTF_8)
+        );
+        assert_eq!(xml_declaration_encoding(b"<rss encoding=\"gbk\">"), None);
     }
 }

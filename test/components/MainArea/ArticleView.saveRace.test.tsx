@@ -74,6 +74,10 @@ vi.mock('@/components/MainArea/hooks/useArticleViewPerformanceMetrics', () => ({
 }));
 
 import { ArticleView } from '@/components/MainArea/ArticleView';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
 
 const makeArticle = (hash: string): Article => ({
   hash,
@@ -109,6 +113,7 @@ const saveButtonAction = (container: HTMLElement) =>
 
 describe('ArticleView handleSaveArticle article-switch race', () => {
   beforeEach(() => {
+    resetRobustnessMetricsForTests();
     mocks.findSavedArticle.mockResolvedValue(null);
     mocks.updateSavedStatus.mockResolvedValue(undefined);
     mocks.unsaveArticle.mockResolvedValue(undefined);
@@ -149,6 +154,7 @@ describe('ArticleView handleSaveArticle article-switch race', () => {
     expect(mocks.updateSavedStatus).toHaveBeenCalledWith('feed-1', 'hash-a', true, 'saved-a');
     // B's view must not flip to "saved" from A's late result.
     expect(saveButtonAction(container)).toBe('save-article');
+    expect(getRobustnessSnapshot().counters['ui.saveRaceViewUpdateSkipped']).toBe(1);
   });
 
   it('still marks the article saved when it stays shown', async () => {
@@ -162,5 +168,6 @@ describe('ArticleView handleSaveArticle article-switch race', () => {
     await flush();
 
     expect(saveButtonAction(container)).toBe('unsave-article');
+    expect(getRobustnessSnapshot().counters['ui.saveRaceViewUpdateSkipped']).toBeUndefined();
   });
 });

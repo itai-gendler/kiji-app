@@ -59,6 +59,12 @@ export async function librarySidebarSnapshot(): Promise<
   return invokeContract<FeedsContract["librarySidebarSnapshot"]>("feeds_library_sidebar_snapshot");
 }
 
+export async function getFavicons(
+  request: FeedsContract["getFavicons"]["request"],
+): Promise<FeedsContract["getFavicons"]["response"]> {
+  return invokeContract<FeedsContract["getFavicons"]>("feeds_get_favicons", request);
+}
+
 export async function get(
   request: FeedsContract["get"]["request"],
 ): Promise<FeedsContract["get"]["response"]> {

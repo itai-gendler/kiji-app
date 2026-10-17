@@ -1,5 +1,15 @@
 pub const SCHEMA_VERSION: i64 = 17;
 
+/// `PRAGMA user_version` target for one-time data repairs run after startup
+/// (see `db::run_data_repairs`). 1 = per-subscription feed count recount;
+/// 2 = `idx_saved_articles_link` for saved-import dedupe by link.
+pub const DATA_REPAIR_VERSION: i64 = 2;
+
+/// Built by data repair v2 off the startup thread (one pass over
+/// `saved_articles`); `IF NOT EXISTS` keeps it idempotent.
+pub const CREATE_SAVED_ARTICLES_LINK_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_saved_articles_link ON saved_articles(link);";
+
 pub const CREATE_TABLES: &str = r#"
   CREATE TABLE IF NOT EXISTS feeds (
     id              TEXT PRIMARY KEY,

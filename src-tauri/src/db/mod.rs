@@ -32,7 +32,7 @@ pub use saved::{
     saved_list_all, saved_query, saved_update_highlights, saved_update_last_read_at,
     saved_update_notes,
 };
-use schema::SCHEMA_VERSION;
+use schema::{CREATE_SAVED_ARTICLES_LINK_INDEX, DATA_REPAIR_VERSION, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::json;
 use std::{
@@ -116,8 +116,9 @@ impl DbState {
             readers.push(Mutex::new(open_reader_connection(&path)?));
         }
         let search_reader = Mutex::new(open_reader_connection(&path)?);
+        let data_repair_version = read_user_version(&writer)?;
 
-        Ok(Self {
+        let state = Self {
             inner: Arc::new(DbStateInner {
                 path,
                 writer: Mutex::new(writer),
@@ -127,7 +128,9 @@ impl DbState {
                 search_epoch: AtomicU64::new(0),
                 previous_shutdown_unclean,
             }),
-        })
+        };
+        state.spawn_feed_count_repair_if_needed(data_repair_version);
+        Ok(state)
     }
 
     /// Removes the dirty marker after the WAL checkpoint so the next launch
@@ -324,6 +327,117 @@ impl DbState {
     pub fn database_path(&self) -> PathBuf {
         self.inner.path.clone()
     }
+
+    /// Runs the one-time per-subscription count repair on a background thread
+    /// so startup never waits on the library-wide grouped recount.
+    fn spawn_feed_count_repair_if_needed(&self, current_version: i64) {
+        if current_version >= DATA_REPAIR_VERSION {
+            return;
+        }
+        let db = self.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = db.with_writer(run_data_repairs) {
+                eprintln!("[KiJi] Feed count repair failed: {error}");
+            }
+        });
+    }
+
+    /// In-memory state for tests that exercise the async helpers.
+    #[cfg(test)]
+    pub(crate) fn for_tests(writer: Connection) -> Self {
+        Self {
+            inner: Arc::new(DbStateInner {
+                path: PathBuf::from(":memory:"),
+                writer: Mutex::new(writer),
+                readers: (0..READER_POOL_SIZE)
+                    .map(|_| Mutex::new(Connection::open_in_memory().expect("open reader")))
+                    .collect(),
+                next_reader: AtomicUsize::new(0),
+                search_reader: Mutex::new(
+                    Connection::open_in_memory().expect("open search reader"),
+                ),
+                search_epoch: AtomicU64::new(0),
+                previous_shutdown_unclean: false,
+            }),
+        }
+    }
+}
+
+/// Runs `action` inside a SAVEPOINT. Outside a transaction the savepoint opens
+/// (and RELEASE commits) one; inside a caller's transaction it nests, so
+/// helpers like `insert_articles_batch` compose into one per-feed transaction.
+/// Any error — or a panic — rolls the savepoint back.
+pub(crate) fn with_savepoint<T>(
+    connection: &Connection,
+    name: &str,
+    action: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    struct RollbackGuard<'a> {
+        connection: &'a Connection,
+        name: &'a str,
+        armed: bool,
+    }
+
+    impl Drop for RollbackGuard<'_> {
+        fn drop(&mut self) {
+            if self.armed {
+                let sql = format!("ROLLBACK TO {0}; RELEASE {0};", self.name);
+                if let Err(error) = self.connection.execute_batch(&sql) {
+                    eprintln!("[KiJi] Failed to roll back savepoint {}: {error}", self.name);
+                }
+            }
+        }
+    }
+
+    connection
+        .execute_batch(&format!("SAVEPOINT {name}"))
+        .map_err(|error| format!("Failed to open savepoint {name}: {error}"))?;
+    let mut guard = RollbackGuard {
+        connection,
+        name,
+        armed: true,
+    };
+    let value = action(connection)?;
+    connection
+        .execute_batch(&format!("RELEASE {name}"))
+        .map_err(|error| format!("Failed to release savepoint {name}: {error}"))?;
+    guard.armed = false;
+    Ok(value)
+}
+
+fn read_user_version(connection: &Connection) -> Result<i64, String> {
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("Failed to read database user_version: {error}"))
+}
+
+/// One-time data repairs keyed on `PRAGMA user_version` (the `_migrations`
+/// ledger tracks schema shape; this tracks data fixes and large-table index
+/// builds that must not run on the startup thread). Runs on a background
+/// thread from [`DbState::load`]; every step is idempotent and all pending
+/// steps commit with the version stamp in one savepoint.
+/// - v1: per-subscription unread/article counts — older builds counted by the
+///   canonical `articles.feed_id` owner, so overlapping subscriptions showed 0
+///   unread on every feed but the owner.
+/// - v2: `idx_saved_articles_link` (saved-import dedupe by link).
+pub(crate) fn run_data_repairs(connection: &Connection) -> Result<(), String> {
+    let current = read_user_version(connection)?;
+    if current >= DATA_REPAIR_VERSION {
+        return Ok(());
+    }
+    with_savepoint(connection, "data_repairs", |connection| {
+        if current < 1 {
+            articles::recount_all_feed_article_counts(connection)?;
+        }
+        if current < 2 {
+            connection
+                .execute_batch(CREATE_SAVED_ARTICLES_LINK_INDEX)
+                .map_err(|error| format!("Failed to create saved article link index: {error}"))?;
+        }
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {DATA_REPAIR_VERSION}"))
+            .map_err(|error| format!("Failed to stamp database user_version: {error}"))
+    })
 }
 
 #[tauri::command]
@@ -1391,6 +1505,12 @@ mod tests {
                 ],
             )
             .expect("insert read article");
+        connection
+            .execute(
+                "INSERT INTO article_feed_items (feed_id, article_hash, fetched_date) VALUES ('feed-1', 'article-hash-2', '2026-01-02T00:00:00.000Z')",
+                [],
+            )
+            .expect("map read article to feed");
 
         let synced = sync_feed_article_counts_batch(&connection, &["feed-1".to_string()])
             .expect("sync feed counts");
@@ -1434,5 +1554,149 @@ mod tests {
         assert!(snapshot.feeds[0].favicon_stored);
         assert_eq!(snapshot.stations.len(), 1);
         assert_eq!(snapshot.stations[0].name, "Tech");
+    }
+
+    #[test]
+    fn data_repair_recounts_overlapping_subscriptions_once() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        run_migrations(&mut connection).expect("run migrations");
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO feeds (id, title, url, created_at, unread_count, article_count) VALUES
+                  ('feed-a', 'A', 'https://a.example/rss', '2026-01-01T00:00:00Z', 1, 1),
+                  ('feed-b', 'B', 'https://b.example/rss', '2026-01-01T00:00:00Z', 0, 0),
+                  ('feed-empty', 'E', 'https://e.example/rss', '2026-01-01T00:00:00Z', 7, 9);
+                INSERT INTO articles (hash, feed_id, fetched_date, read) VALUES
+                  ('shared', 'feed-a', '2026-01-01T00:00:00Z', 0),
+                  ('b-read', 'feed-b', '2026-01-01T00:00:00Z', 1);
+                INSERT INTO article_feed_items (feed_id, article_hash, fetched_date) VALUES
+                  ('feed-a', 'shared', '2026-01-01T00:00:00Z'),
+                  ('feed-b', 'shared', '2026-01-01T00:00:00Z'),
+                  ('feed-b', 'b-read', '2026-01-01T00:00:00Z');
+                "#,
+            )
+            .expect("seed stale owner-based counts");
+
+        let stored = |connection: &Connection| -> Vec<(String, i64, i64)> {
+            connection
+                .prepare("SELECT id, unread_count, article_count FROM feeds ORDER BY id")
+                .expect("prepare")
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .expect("query")
+                .collect::<Result<_, _>>()
+                .expect("rows")
+        };
+
+        assert_eq!(super::read_user_version(&connection).expect("version"), 0);
+        super::run_data_repairs(&connection).expect("run data repairs");
+        assert_eq!(
+            stored(&connection),
+            vec![
+                ("feed-a".to_string(), 1, 1),
+                ("feed-b".to_string(), 1, 2),
+                ("feed-empty".to_string(), 0, 0),
+            ]
+        );
+        assert_eq!(
+            super::read_user_version(&connection).expect("version"),
+            super::DATA_REPAIR_VERSION
+        );
+        assert!(connection.is_autocommit());
+
+        let link_index: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_saved_articles_link'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read index catalog");
+        assert_eq!(link_index, 1, "repair v2 must create idx_saved_articles_link");
+        let saved_link_plan: String = connection
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM saved_articles WHERE link = 'https://x'",
+                [],
+                |row| row.get(3),
+            )
+            .expect("saved link plan");
+        assert!(saved_link_plan.contains("idx_saved_articles_link"), "{saved_link_plan}");
+
+        // Stamped: a later launch must not rescan the library.
+        connection
+            .execute("UPDATE feeds SET unread_count = 42 WHERE id = 'feed-a'", [])
+            .expect("perturb counts");
+        super::run_data_repairs(&connection).expect("rerun data repairs");
+        assert_eq!(stored(&connection)[0], ("feed-a".to_string(), 42, 1));
+    }
+
+    #[test]
+    fn data_repair_from_v1_only_adds_saved_link_index() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        run_migrations(&mut connection).expect("run migrations");
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 1; \
+                 INSERT INTO feeds (id, title, url, created_at, unread_count, article_count) \
+                 VALUES ('feed-a', 'A', 'https://a.example/rss', '2026-01-01T00:00:00Z', 5, 5);",
+            )
+            .expect("seed v1 database");
+        super::run_data_repairs(&connection).expect("run data repairs");
+        let (unread, index_count): (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT unread_count FROM feeds WHERE id = 'feed-a'), \
+                 (SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_saved_articles_link')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read state");
+        assert_eq!(unread, 5, "v1 recount already applied; must not rerun");
+        assert_eq!(index_count, 1);
+        assert_eq!(super::read_user_version(&connection).expect("version"), 2);
+    }
+
+    #[test]
+    fn data_repair_recount_is_one_grouped_pass() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        run_migrations(&mut connection).expect("run migrations");
+        let plan = connection
+            .prepare(
+                r#"EXPLAIN QUERY PLAN
+                SELECT afi.feed_id, COUNT(*), SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END)
+                FROM article_feed_items afi
+                JOIN articles a ON a.hash = afi.article_hash
+                GROUP BY afi.feed_id"#,
+            )
+            .expect("prepare plan")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("query plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan rows")
+            .join(" | ");
+        println!("recount grouped plan: {plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "GROUP BY must ride index order: {plan}");
+        assert!(plan.contains("SEARCH a USING INDEX"), "articles probed by hash: {plan}");
+    }
+
+    #[test]
+    fn savepoint_nests_inside_a_caller_transaction_and_rolls_back_alone() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("CREATE TABLE t (v INTEGER); BEGIN; INSERT INTO t VALUES (1);")
+            .expect("seed outer transaction");
+        let inner: Result<(), String> = super::with_savepoint(&connection, "inner", |c| {
+            c.execute("INSERT INTO t VALUES (2)", []).map_err(|e| e.to_string())?;
+            Err("boom".to_string())
+        });
+        assert!(inner.is_err());
+        assert!(!connection.is_autocommit(), "outer transaction stays open");
+        connection.execute_batch("COMMIT").expect("commit outer");
+        let values: Vec<i64> = connection
+            .prepare("SELECT v FROM t")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(values, vec![1]);
     }
 }

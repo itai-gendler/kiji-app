@@ -1,5 +1,7 @@
 import { feedsManager, type Feed } from '@/services/feeds/feedsManager';
 import { tagsManager } from '@/services/tags/tagsManager';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
+import { logger } from '@/services/logger';
 import { withNonLibraryImportLock } from './libraryReorderQueue';
 import type {
   OpmlImportEntry,
@@ -49,6 +51,7 @@ const normalizeFeedUrl = (url?: string): string | null => {
 export const applyOpmlImportEntries = async (
   entries: OpmlImportEntry[],
 ): Promise<OpmlImportResult> => withNonLibraryImportLock(async () => {
+  const startedAt = performance.now();
   const [existingFeeds, existingTags] = await Promise.all([
     feedsManager.getAllFeeds(),
     tagsManager.getAllTags(),
@@ -296,6 +299,18 @@ export const applyOpmlImportEntries = async (
       ...(emoji ? { emoji } : {}),
       tags: stations ? [...new Set([...(feed.tags ?? []), ...stations])] : feed.tags ?? [],
     }];
+  });
+
+  recordRobustnessEvent('opml.importPartialFailures', partialFailures);
+  // Counts only: an analyzer reads this line, and it must never carry feed URLs.
+  logger.info('OPML', 'OPML import applied', {
+    imported,
+    skippedDuplicate,
+    invalid,
+    failed,
+    partialFailures,
+    createdFeeds: publishedFeeds.length,
+    durationMs: Math.round(performance.now() - startedAt),
   });
 
   return {

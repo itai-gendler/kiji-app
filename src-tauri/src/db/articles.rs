@@ -6,7 +6,7 @@ use tauri::State;
 use super::{
     models::{bool_to_i64, to_optional_json_string, ArticleRecord},
     search::create_fts_prefix_query,
-    DbState,
+    with_savepoint, DbState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -302,16 +302,8 @@ pub async fn articles_count_unread_by_feed(
     state: State<'_, DbState>,
 ) -> Result<i64, String> {
     let db = state.inner().clone();
-    db.read(move |connection| {
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM articles WHERE feed_id = ?1 AND read = 0",
-                params![feed_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("Failed to count unread articles: {error}"))
-    })
-    .await
+    db.read(move |connection| count_feed_articles(connection, &feed_id).map(|(_, unread)| unread))
+        .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -320,16 +312,26 @@ pub async fn articles_count_by_feed(
     state: State<'_, DbState>,
 ) -> Result<i64, String> {
     let db = state.inner().clone();
-    db.read(move |connection| {
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM articles WHERE feed_id = ?1",
-                params![feed_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("Failed to count feed articles: {error}"))
-    })
-    .await
+    db.read(move |connection| count_feed_articles(connection, &feed_id).map(|(total, _)| total))
+        .await
+}
+
+/// Per-subscription `(article_count, unread_count)`. Counts go through
+/// `article_feed_items` (the same membership the article list reads) rather
+/// than the canonical `articles.feed_id` owner, so a story shared by two
+/// subscriptions counts for both. Plan: SEARCH afi USING COVERING INDEX
+/// idx_article_feed_items_feed_date (feed_id=?) + SEARCH a USING INDEX
+/// sqlite_autoindex_articles_1 (hash=?) — no scan, no sort.
+pub fn count_feed_articles(connection: &Connection, feed_id: &str) -> Result<(i64, i64), String> {
+    connection
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END), 0) \
+             FROM article_feed_items afi JOIN articles a ON a.hash = afi.article_hash \
+             WHERE afi.feed_id = ?1",
+            params![feed_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|error| format!("Failed to count feed articles: {error}"))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -348,73 +350,105 @@ pub fn sync_feed_article_counts_batch(
         return Ok(vec![]);
     }
 
-    let mut counts_by_feed: HashMap<String, (i64, i64)> = HashMap::new();
-    for feed_id in feed_ids {
-        counts_by_feed.insert(feed_id.clone(), (0, 0));
-    }
+    // A savepoint (not BEGIN) so this composes inside the per-feed store
+    // transaction and still commits on its own when called standalone.
+    with_savepoint(connection, "sync_feed_counts", |connection| {
+        let mut counts_by_feed: HashMap<String, (i64, i64)> = HashMap::new();
+        for feed_id in feed_ids {
+            counts_by_feed.insert(feed_id.clone(), (0, 0));
+        }
 
-    let placeholders = feed_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT feed_id, COUNT(*) AS article_count, \
-         SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) AS unread_count \
-         FROM articles WHERE feed_id IN ({placeholders}) GROUP BY feed_id"
-    );
+        let placeholders = feed_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        // Per-subscription membership (see `count_feed_articles`).
+        let sql = format!(
+            "SELECT afi.feed_id, COUNT(*) AS article_count, \
+             SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END) AS unread_count \
+             FROM article_feed_items afi JOIN articles a ON a.hash = afi.article_hash \
+             WHERE afi.feed_id IN ({placeholders}) GROUP BY afi.feed_id"
+        );
 
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Failed to prepare batch feed count query: {error}"))?;
-    let query_params: Vec<Value> = feed_ids
-        .iter()
-        .map(|feed_id| Value::Text(feed_id.clone()))
-        .collect();
-    let rows = statement
-        .query_map(params_from_iter(query_params.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .map_err(|error| format!("Failed to query batch feed counts: {error}"))?;
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare batch feed count query: {error}"))?;
+        let query_params: Vec<Value> = feed_ids
+            .iter()
+            .map(|feed_id| Value::Text(feed_id.clone()))
+            .collect();
+        let rows = statement
+            .query_map(params_from_iter(query_params.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to query batch feed counts: {error}"))?;
 
-    for row in rows {
-        let (feed_id, article_count, unread_count) = row
-            .map_err(|error| format!("Failed to read batch feed count row: {error}"))?;
-        counts_by_feed.insert(feed_id, (article_count, unread_count));
-    }
+        for row in rows {
+            let (feed_id, article_count, unread_count) = row
+                .map_err(|error| format!("Failed to read batch feed count row: {error}"))?;
+            counts_by_feed.insert(feed_id, (article_count, unread_count));
+        }
 
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| format!("Failed to start feed count sync transaction: {error}"))?;
+        let mut synced = Vec::with_capacity(feed_ids.len());
+        for feed_id in feed_ids {
+            let (article_count, unread_count) = counts_by_feed
+                .get(feed_id)
+                .copied()
+                .unwrap_or((0, 0));
+            connection
+                .execute(
+                    "UPDATE feeds SET unread_count = ?1, article_count = ?2 WHERE id = ?3",
+                    params![unread_count, article_count, feed_id],
+                )
+                .map_err(|error| format!("Failed to update feed counts for {feed_id}: {error}"))?;
+            synced.push(FeedArticleCounts {
+                feed_id: feed_id.clone(),
+                unread_count,
+                article_count,
+            });
+        }
 
-    let mut synced = Vec::with_capacity(feed_ids.len());
-    for feed_id in feed_ids {
-        let (article_count, unread_count) = counts_by_feed
-            .get(feed_id)
-            .copied()
-            .unwrap_or((0, 0));
-        transaction
-            .execute(
-                "UPDATE feeds SET unread_count = ?1, article_count = ?2 WHERE id = ?3",
-                params![unread_count, article_count, feed_id],
-            )
-            .map_err(|error| format!("Failed to update feed counts for {feed_id}: {error}"))?;
-        synced.push(FeedArticleCounts {
-            feed_id: feed_id.clone(),
-            unread_count,
-            article_count,
-        });
-    }
+        Ok(synced)
+    })
+}
 
-    transaction
-        .commit()
-        .map_err(|error| format!("Failed to commit feed count sync transaction: {error}"))?;
-
-    Ok(synced)
+/// Recomputes every feed's stored counts from per-subscription membership in
+/// one statement: a single grouped pass over `article_feed_items` (walked in
+/// primary-key order, so no temp b-tree for GROUP BY) joined to `articles`
+/// by hash. Feeds without mappings drop to 0. Used by the one-time data repair.
+pub(crate) fn recount_all_feed_article_counts(connection: &Connection) -> Result<usize, String> {
+    connection
+        .execute(
+            r#"
+            UPDATE feeds
+            SET unread_count = counts.unread_count,
+                article_count = counts.article_count
+            FROM (
+              SELECT f.id AS feed_id,
+                     COALESCE(grouped.article_count, 0) AS article_count,
+                     COALESCE(grouped.unread_count, 0) AS unread_count
+              FROM feeds f
+              LEFT JOIN (
+                SELECT afi.feed_id AS feed_id,
+                       COUNT(*) AS article_count,
+                       SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END) AS unread_count
+                FROM article_feed_items afi
+                JOIN articles a ON a.hash = afi.article_hash
+                GROUP BY afi.feed_id
+              ) grouped ON grouped.feed_id = f.id
+            ) counts
+            WHERE counts.feed_id = feeds.id
+              AND (feeds.unread_count IS NOT counts.unread_count
+                OR feeds.article_count IS NOT counts.article_count)
+            "#,
+            [],
+        )
+        .map_err(|error| format!("Failed to recount feed article counts: {error}"))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -846,54 +880,59 @@ pub fn insert_articles_batch(
         WHERE hash = ?2
     "#;
 
-    let mut inserted = 0;
-    for article in articles {
-        let metadata_json = to_optional_json_string(&article.metadata)?;
-        let article_changes = connection
-            .execute(
-                article_sql,
-                params![
-                    article.hash,
-                    article.feed_id,
-                    article.title,
-                    article.description,
-                    article.content,
-                    article.link,
-                    article.author,
-                    article.published_date,
-                    article.fetched_date,
-                    bool_to_i64(article.read),
-                    bool_to_i64(article.starred),
-                    bool_to_i64(article.saved),
-                    article.saved_article_id,
-                    article.last_read_at,
-                    metadata_json,
-                    article.feed_url,
-                    article.feed_title,
-                    article.feed_favicon,
-                    article.feed_favicon_has_transparency.map(bool_to_i64),
-                    article.feed_favicon_bg_light,
-                    article.feed_favicon_bg_dark,
-                    article.feed_image,
-                ],
-            )
-            .map_err(|error| format!("Failed to insert article: {error}"))?;
+    // One savepoint for the whole batch: a single commit (not one autocommit +
+    // FTS trigger fsync per row) and all-or-nothing on error. Nests inside the
+    // per-feed store transaction.
+    with_savepoint(connection, "insert_articles_batch", |connection| {
+        let mut inserted = 0;
+        for article in articles {
+            let metadata_json = to_optional_json_string(&article.metadata)?;
+            let article_changes = connection
+                .execute(
+                    article_sql,
+                    params![
+                        article.hash,
+                        article.feed_id,
+                        article.title,
+                        article.description,
+                        article.content,
+                        article.link,
+                        article.author,
+                        article.published_date,
+                        article.fetched_date,
+                        bool_to_i64(article.read),
+                        bool_to_i64(article.starred),
+                        bool_to_i64(article.saved),
+                        article.saved_article_id,
+                        article.last_read_at,
+                        metadata_json,
+                        article.feed_url,
+                        article.feed_title,
+                        article.feed_favicon,
+                        article.feed_favicon_has_transparency.map(bool_to_i64),
+                        article.feed_favicon_bg_light,
+                        article.feed_favicon_bg_dark,
+                        article.feed_image,
+                    ],
+                )
+                .map_err(|error| format!("Failed to insert article: {error}"))?;
 
-        let is_feed_article = article.feed_id != "clipboard" && article.feed_id != "saved";
-        let mapping_changes = if is_feed_article {
-            connection
-                .execute(feed_item_sql, params![article.feed_id, article.hash])
-                .map_err(|error| format!("Failed to insert article/feed mapping: {error}"))?
-        } else {
-            0
-        };
+            let is_feed_article = article.feed_id != "clipboard" && article.feed_id != "saved";
+            let mapping_changes = if is_feed_article {
+                connection
+                    .execute(feed_item_sql, params![article.feed_id, article.hash])
+                    .map_err(|error| format!("Failed to insert article/feed mapping: {error}"))?
+            } else {
+                0
+            };
 
-        if mapping_changes > 0 || (!is_feed_article && article_changes > 0) {
-            inserted += 1;
+            if mapping_changes > 0 || (!is_feed_article && article_changes > 0) {
+                inserted += 1;
+            }
         }
-    }
 
-    Ok(inserted)
+        Ok(inserted)
+    })
 }
 
 pub fn delete_articles_by_feed(
@@ -1521,5 +1560,139 @@ mod tests {
             )
             .expect("read article meta");
         assert_eq!(row, (None, None, None, None, Some("T".to_string())));
+    }
+
+    fn record_for(hash: &str, feed_id: &str) -> ArticleRecord {
+        ArticleRecord {
+            hash: hash.to_string(),
+            feed_id: feed_id.to_string(),
+            title: format!("Title {hash}"),
+            description: String::new(),
+            content: String::new(),
+            link: Some(format!("https://example.com/{hash}")),
+            author: None,
+            published_date: Some("2026-06-22T12:00:00.000Z".to_string()),
+            fetched_date: "2026-06-22T12:00:00.000Z".to_string(),
+            read: false,
+            starred: false,
+            saved: false,
+            saved_article_id: None,
+            last_read_at: None,
+            metadata: None,
+            feed_url: None,
+            feed_title: None,
+            feed_favicon: None,
+            feed_favicon_has_transparency: None,
+            feed_favicon_bg_light: None,
+            feed_favicon_bg_dark: None,
+            feed_image: None,
+        }
+    }
+
+    fn counts_for(connection: &Connection, feed_ids: &[&str]) -> Vec<(String, i64, i64)> {
+        let ids: Vec<String> = feed_ids.iter().map(|id| id.to_string()).collect();
+        sync_feed_article_counts_batch(connection, &ids)
+            .expect("sync counts")
+            .into_iter()
+            .map(|entry| (entry.feed_id, entry.unread_count, entry.article_count))
+            .collect()
+    }
+
+    #[test]
+    fn shared_hash_counts_unread_for_every_subscription() {
+        let connection = setup_connection();
+        insert_feed(&connection, "feed-a");
+        insert_feed(&connection, "feed-b");
+        // Same story in both feeds: canonical owner is feed-a, feed-b only
+        // has the article_feed_items membership row.
+        insert_articles_batch(&connection, &[record_for("shared", "feed-a")]).expect("insert a");
+        insert_articles_batch(&connection, &[record_for("shared", "feed-b")]).expect("insert b");
+
+        assert_eq!(
+            counts_for(&connection, &["feed-a", "feed-b"]),
+            vec![
+                ("feed-a".to_string(), 1, 1),
+                ("feed-b".to_string(), 1, 1),
+            ],
+            "the non-owner subscription must count the shared unread story"
+        );
+        assert_eq!(count_feed_articles(&connection, "feed-b").expect("count b"), (1, 1));
+
+        connection
+            .execute("UPDATE articles SET read = 1 WHERE hash = 'shared'", [])
+            .expect("mark read");
+        assert_eq!(
+            counts_for(&connection, &["feed-a", "feed-b"]),
+            vec![
+                ("feed-a".to_string(), 0, 1),
+                ("feed-b".to_string(), 0, 1),
+            ],
+            "marking the shared story read must clear both badges"
+        );
+        assert_eq!(count_feed_articles(&connection, "feed-a").expect("count a"), (1, 0));
+        let stored: Vec<(i64, i64)> = connection
+            .prepare("SELECT unread_count, article_count FROM feeds ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(stored, vec![(0, 1), (0, 1)]);
+    }
+
+    #[test]
+    fn per_feed_count_queries_use_indexes_not_scans() {
+        let connection = setup_connection();
+        let plan = |sql: &str| -> String {
+            connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("prepare plan")
+                .query_map(params!["feed-1"], |row| row.get::<_, String>(3))
+                .expect("query plan")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("plan rows")
+                .join(" | ")
+        };
+        let single = plan(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END), 0) \
+             FROM article_feed_items afi JOIN articles a ON a.hash = afi.article_hash \
+             WHERE afi.feed_id = ?1",
+        );
+        let batch = plan(
+            "SELECT afi.feed_id, COUNT(*), SUM(CASE WHEN a.read = 0 THEN 1 ELSE 0 END) \
+             FROM article_feed_items afi JOIN articles a ON a.hash = afi.article_hash \
+             WHERE afi.feed_id IN (?1) GROUP BY afi.feed_id",
+        );
+        println!("single-feed count plan: {single}");
+        println!("batch count plan: {batch}");
+        for current in [&single, &batch] {
+            assert!(!current.contains("SCAN"), "count query must not full-scan: {current}");
+            assert!(!current.contains("TEMP B-TREE"), "count query must not sort: {current}");
+        }
+    }
+
+    #[test]
+    fn insert_articles_batch_is_all_or_nothing() {
+        let connection = setup_connection();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("enable foreign keys like production connections");
+        insert_feed(&connection, "feed-a");
+        // The second record violates the articles.feed_id foreign key.
+        let error = insert_articles_batch(
+            &connection,
+            &[record_for("good", "feed-a"), record_for("bad", "missing-feed")],
+        )
+        .expect_err("FK violation must fail the batch");
+        assert!(error.contains("Failed to insert article"), "{error}");
+        let rows: i64 = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM articles) + (SELECT COUNT(*) FROM article_feed_items)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rows");
+        assert_eq!(rows, 0, "the earlier article in the batch must roll back");
+        assert!(connection.is_autocommit());
     }
 }

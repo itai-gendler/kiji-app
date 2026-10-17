@@ -142,6 +142,7 @@ vi.mock("@/services/favicons/faviconRefreshService", () => ({
 
 vi.mock("@/services/logger", () => ({
   logger: {
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -153,12 +154,17 @@ import * as feedStoreModule from "@/stores/feedStore";
 import { logger as mockedLogger } from "@/services/logger";
 import { resetNativeRefreshLockForTests } from "@/services/scheduler/nativeFeedRefresh";
 import { resetWakeDedupeForTests } from "@/services/scheduler/schedulerWakeDedupe";
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from "@/services/diagnostics/robustnessMetrics";
 
 describe("feedSchedulerService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetWakeDedupeForTests();
     resetNativeRefreshLockForTests();
+    resetRobustnessMetricsForTests();
     getE2eConfig.mockReturnValue({ schedulerIntervalMs: 1 });
     isNativeFeedIngestionEnabled.mockReturnValue(false);
     getSettings.mockResolvedValue({ backgroundUpdate: "every-5m" });
@@ -1758,6 +1764,354 @@ describe("feedSchedulerService", () => {
       } finally {
         unsubscribe();
       }
+    });
+  });
+
+  describe("station switch keeps the interrupted full-library follow-up", () => {
+    const emptyNativeResult = {
+      plan: { prioritized: [], skippedBackoffCount: 0, skippedSuppressedCount: 0 },
+      queuedCount: 0,
+      executedFeedCount: 0,
+      changedFeeds: 0,
+      notModifiedFeeds: 0,
+      failedFeeds: 0,
+      insertedArticles: 0,
+      feedResults: [],
+    };
+    type NativeOptions = { onlyFeedIds?: string[]; skipFeedIdsForThisCycle?: string[] };
+    const callOptions = (index: number): NativeOptions | undefined => (
+      previewNativeCycle.mock.calls[index]?.[0] as { options?: NativeOptions } | undefined
+    )?.options;
+    const lastCompletedAt = (): number | null => (
+      feedScheduler as unknown as { lastCycleCompletedAt: number | null }
+    ).lastCycleCompletedAt;
+    const settle = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    beforeEach(() => {
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      getE2eConfig.mockReturnValue({ schedulerIntervalMs: 1 });
+    });
+
+    it("runs the station-scoped boost cycle and then the unscoped follow-up", async () => {
+      let releaseInterrupted!: (value: unknown) => void;
+      const completedAtWhenFollowUpStarted: Array<number | null> = [];
+      let call = 0;
+      previewNativeCycle.mockImplementation(() => {
+        call += 1;
+        if (call === 2) {
+          return new Promise((resolve) => {
+            releaseInterrupted = resolve;
+          });
+        }
+        if (call >= 3) {
+          completedAtWhenFollowUpStarted.push(lastCompletedAt());
+        }
+        return Promise.resolve(emptyNativeResult);
+      });
+      const events: Array<{ type: string }> = [];
+      const unsubscribe = feedScheduler.on((event) => {
+        events.push(event);
+      });
+
+      try {
+        await feedScheduler.start();
+        const tickHandler = getSchedulerEventHandler("scheduler:cycle-tick");
+
+        // 1. A full cycle completes.
+        tickHandler?.();
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(1);
+        });
+        const completedAfterFirstFullCycle = lastCompletedAt();
+        expect(completedAfterFirstFullCycle).not.toBeNull();
+
+        // 2. Next tick starts a full cycle; the station switch interrupts it.
+        await settle();
+        tickHandler?.();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+        });
+        feedScheduler.pauseForStationSelection();
+        feedScheduler.suppressFeedsForNextCycle(["feed-foreground"]);
+        feedScheduler.boostMany(["feed-station-1", "feed-station-2"]);
+        releaseInterrupted(emptyNativeResult);
+        await settle();
+        expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+
+        // 3. Resume: station-scoped cycle, then the preserved full follow-up.
+        feedScheduler.resumeAfterStationSelection();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(4);
+        });
+
+        expect(callOptions(2)?.onlyFeedIds).toEqual(["feed-station-1", "feed-station-2"]);
+        // Out-of-scope suppressions are kept for the full follow-up.
+        expect(callOptions(2)?.skipFeedIdsForThisCycle).toBeUndefined();
+        expect(callOptions(3)?.onlyFeedIds).toBeUndefined();
+        expect(callOptions(3)?.skipFeedIdsForThisCycle).toEqual(["feed-foreground"]);
+
+        // The scoped station cycle did not mark the library fresh.
+        expect(completedAtWhenFollowUpStarted).toEqual([
+          completedAfterFirstFullCycle,
+          completedAfterFirstFullCycle,
+        ]);
+        await vi.waitFor(() => {
+          expect(lastCompletedAt()).toBeGreaterThan(completedAfterFirstFullCycle ?? 0);
+        });
+        expect(getRobustnessSnapshot().counters["scheduler.fullFollowUpCycle"]).toBe(1);
+
+        // Exactly one follow-up: no further cycles without a new trigger.
+        await settle(20);
+        expect(previewNativeCycle).toHaveBeenCalledTimes(4);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("does not add a full cycle when the station switch interrupted nothing", async () => {
+      previewNativeCycle.mockResolvedValue(emptyNativeResult);
+      const events: Array<{ type: string }> = [];
+      const unsubscribe = feedScheduler.on((event) => {
+        events.push(event);
+      });
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(1);
+        });
+        const completedAfterFullCycle = lastCompletedAt();
+
+        feedScheduler.pauseForStationSelection();
+        feedScheduler.boostMany(["feed-station-1"]);
+        feedScheduler.resumeAfterStationSelection();
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(2);
+        });
+        await settle(20);
+
+        expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+        expect(callOptions(1)?.onlyFeedIds).toEqual(["feed-station-1"]);
+        expect(lastCompletedAt()).toBe(completedAfterFullCycle);
+        expect(getRobustnessSnapshot().counters["scheduler.fullFollowUpCycle"]).toBeUndefined();
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("does not let a boost consume a native tick deferred during the station pause", async () => {
+      previewNativeCycle.mockResolvedValue(emptyNativeResult);
+      await feedScheduler.start();
+
+      feedScheduler.pauseForStationSelection();
+      getSchedulerEventHandler("scheduler:cycle-tick")?.();
+      feedScheduler.boostMany(["feed-station-1"]);
+      await settle();
+      feedScheduler.resumeAfterStationSelection();
+
+      await vi.waitFor(() => {
+        expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+      });
+      expect(callOptions(0)?.onlyFeedIds).toEqual(["feed-station-1"]);
+      expect(callOptions(1)?.onlyFeedIds).toBeUndefined();
+      await settle(20);
+      expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps resume catch-up armed when only a scoped cycle succeeded after an all-failed full cycle", async () => {
+      getE2eConfig.mockReturnValue(null);
+      getSettings.mockResolvedValue({ backgroundUpdate: "every-15m" });
+      previewNativeCycle.mockResolvedValue({
+        ...emptyNativeResult,
+        queuedCount: 1,
+        executedFeedCount: 1,
+        failedFeeds: 1,
+        feedResults: [{ feedId: "feed-1", status: "failed", error: "network down" }],
+      });
+      const events: Array<{ type: string }> = [];
+      const unsubscribe = feedScheduler.on((event) => {
+        events.push(event);
+      });
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(1);
+        });
+
+        previewNativeCycle.mockResolvedValue({
+          ...emptyNativeResult,
+          queuedCount: 1,
+          executedFeedCount: 1,
+          notModifiedFeeds: 1,
+          feedResults: [{ feedId: "feed-station-1", status: "not-modified", insertedCount: 0 }],
+        });
+        feedScheduler.boostMany(["feed-station-1"]);
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(2);
+        });
+
+        await feedScheduler.catchUpAfterResume();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(3);
+        });
+        expect(callOptions(2)?.onlyFeedIds).toBeUndefined();
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("keeps the preserved full follow-up deferred during startup deferral", async () => {
+      let releaseInterrupted!: (value: unknown) => void;
+      let call = 0;
+      previewNativeCycle.mockImplementation(() => {
+        call += 1;
+        if (call === 1) {
+          return new Promise((resolve) => {
+            releaseInterrupted = resolve;
+          });
+        }
+        return Promise.resolve(emptyNativeResult);
+      });
+
+      await feedScheduler.start();
+      getSchedulerEventHandler("scheduler:cycle-tick")?.();
+      await vi.waitFor(() => {
+        expect(previewNativeCycle).toHaveBeenCalledTimes(1);
+      });
+
+      feedScheduler.pauseForStationSelection();
+      feedScheduler.boostMany(["feed-station-1"]);
+      feedScheduler.setStartupCycleDeferredForTests(true);
+      releaseInterrupted(emptyNativeResult);
+      await settle();
+      feedScheduler.resumeAfterStationSelection();
+      await settle(20);
+
+      expect(previewNativeCycle).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("station pause and round-2 robustness metrics", () => {
+    it("records how long the station pause was held, once per outer pause", async () => {
+      await feedScheduler.start();
+
+      feedScheduler.pauseForStationSelection();
+      feedScheduler.pauseForStationSelection();
+      feedScheduler.resumeAfterStationSelection();
+      expect(getRobustnessSnapshot().durations["scheduler.stationPauseHeldMs"]).toBeUndefined();
+      feedScheduler.resumeAfterStationSelection();
+      expect(getRobustnessSnapshot().durations["scheduler.stationPauseHeldMs"]?.count).toBe(1);
+
+      feedScheduler.pauseForStationSelection();
+      feedScheduler.releaseStationSelectionPause("background");
+      feedScheduler.resumeAfterStationSelection();
+      expect(getRobustnessSnapshot().durations["scheduler.stationPauseHeldMs"]?.count).toBe(2);
+      expect(getRobustnessSnapshot().counters["scheduler.stationPauseSafetyRelease"]).toBeUndefined();
+    });
+
+    it("records and warns when the 10-minute safety timeout releases the pause", async () => {
+      vi.useFakeTimers();
+
+      try {
+        await feedScheduler.start();
+        feedScheduler.pauseForStationSelection();
+        await vi.advanceTimersByTimeAsync(10 * 60_000 + 1);
+
+        const snapshot = getRobustnessSnapshot();
+        expect(snapshot.counters["scheduler.stationPauseSafetyRelease"]).toBe(1);
+        expect(snapshot.durations["scheduler.stationPauseHeldMs"]?.count).toBe(1);
+        expect(snapshot.durations["scheduler.stationPauseHeldMs"]?.maxMs).toBeGreaterThanOrEqual(10 * 60_000);
+        expect(mockedLogger.warn).toHaveBeenCalledWith(
+          "Scheduler",
+          "Station-selection scheduler pause hit the safety timeout",
+          expect.objectContaining({ heldMs: expect.any(Number) }),
+        );
+
+        feedScheduler.resumeAfterStationSelection();
+        expect(getRobustnessSnapshot().durations["scheduler.stationPauseHeldMs"]?.count).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("counts same-mode reconfigure skips", async () => {
+      await feedScheduler.start();
+      await feedScheduler.reconfigure("every-5m");
+
+      expect(getRobustnessSnapshot().counters["scheduler.reconfigureSkippedSameMode"]).toBe(1);
+      expect(mockedLogger.debug).toHaveBeenCalledWith(
+        "Scheduler",
+        "Skipped same-mode scheduler reconfigure",
+        { mode: "every-5m" },
+      );
+    });
+
+    it("counts count-sync failures after a cycle", async () => {
+      getE2eConfig.mockReturnValue(null);
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      previewNativeCycle.mockResolvedValue({
+        plan: { prioritized: [], skippedBackoffCount: 0, skippedSuppressedCount: 0 },
+        queuedCount: 1,
+        executedFeedCount: 1,
+        changedFeeds: 1,
+        notModifiedFeeds: 0,
+        failedFeeds: 0,
+        insertedArticles: 2,
+        feedResults: [{ feedId: "feed-1", status: "changed", insertedCount: 2 }],
+      });
+      syncFeedCountsBatch.mockRejectedValueOnce(new Error("count sync failed"));
+
+      await feedScheduler.start();
+      getSchedulerEventHandler("scheduler:cycle-tick")?.();
+      await vi.waitFor(() => {
+        expect(getRobustnessSnapshot().counters["scheduler.countSyncFailed"]).toBe(1);
+      });
+    });
+
+    it("counts cancelled fetches skipped by the legacy cycle", async () => {
+      fetchFeedNetworkWithCache.mockRejectedValue(JSON.stringify({
+        code: "FEED_REQUEST_CANCELLED",
+        message: "Feed request was cancelled.",
+      }));
+
+      await feedScheduler.start();
+      getSchedulerEventHandler("scheduler:cycle-tick")?.();
+      await vi.waitFor(() => {
+        expect(getRobustnessSnapshot().counters["scheduler.cancelledFetchSkipped"]).toBe(1);
+      });
+    });
+
+    it("reports cancelled native per-feed results in the cycle stats", async () => {
+      getE2eConfig.mockReturnValue(null);
+      isNativeFeedIngestionEnabled.mockReturnValue(true);
+      const cancelled = JSON.stringify({ code: "FEED_REQUEST_CANCELLED", message: "Feed request was cancelled." });
+      previewNativeCycle.mockResolvedValue({
+        plan: { prioritized: [], skippedBackoffCount: 0, skippedSuppressedCount: 0 },
+        queuedCount: 3,
+        executedFeedCount: 3,
+        changedFeeds: 0,
+        notModifiedFeeds: 1,
+        failedFeeds: 2,
+        insertedArticles: 0,
+        feedResults: [
+          { feedId: "feed-1", status: "not-modified", insertedCount: 0 },
+          { feedId: "feed-2", status: "failed", error: cancelled },
+          { feedId: "feed-3", status: "failed", error: "network down" },
+        ],
+      });
+
+      await feedScheduler.start();
+      getSchedulerEventHandler("scheduler:cycle-tick")?.();
+      await vi.waitFor(() => {
+        expect(mockedLogger.info).toHaveBeenCalledWith(
+          "Scheduler",
+          "Native background refresh cycle stats",
+          expect.objectContaining({ failedFeeds: 2, cancelledFeeds: 1 }),
+        );
+      });
     });
   });
 });

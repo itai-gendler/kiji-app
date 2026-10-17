@@ -6,6 +6,10 @@ import {
   type HelperTaskResultEvent,
 } from '@/services/tasks/helperTaskContracts';
 import { HelperTaskServer } from '@/services/tasks/helperTaskServer';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
 
 const OWNER_ID = 1;
 
@@ -59,6 +63,7 @@ describe('HelperTaskServer.clearTasks', () => {
 
   beforeEach(() => {
     events = [];
+    resetRobustnessMetricsForTests();
     const blocking = createBlockingBackend();
     releases = blocking.releases;
     harness.server = new HelperTaskServer({
@@ -97,6 +102,24 @@ describe('HelperTaskServer.clearTasks', () => {
       priority: 'normal',
       durationMs: 0,
     });
+    // Only the queued task counts; the running one settles through runTask.
+    expect(getRobustnessSnapshot().counters['helperTasks.pendingCancelledOnClear']).toBe(1);
+  });
+
+  it('does not count a clear that only aborts running tasks', async () => {
+    const running = helperTaskClient.runTask({
+      id: 'running-only',
+      kind: HELPER_TASK_KIND.SAVED_ARTICLES_IMPORT,
+      payload: { zipArrayBuffer: new Uint8Array() },
+    });
+    running.catch(() => undefined);
+    await flush();
+
+    const response = await helperTaskClient.clearTasks();
+
+    expect(response.cleared).toBe(1);
+    await expect(running).rejects.toThrow('Task cancelled');
+    expect(getRobustnessSnapshot().counters['helperTasks.pendingCancelledOnClear']).toBeUndefined();
   });
 
   it('only clears the requested kinds and keeps other workflows queued', async () => {
@@ -122,6 +145,7 @@ describe('HelperTaskServer.clearTasks', () => {
 
     expect(response.cleared).toBe(1);
     expect(events.map((event) => [event.taskId, event.status])).toEqual([['favicon', 'cancelled']]);
+    expect(getRobustnessSnapshot().counters['helperTasks.pendingCancelledOnClear']).toBe(1);
     expect(harness.server!.getQueueSnapshot()).toMatchObject({ running: 1, normal: 1, low: 0 });
 
     // The unrelated runTask still completes once the blocker finishes.

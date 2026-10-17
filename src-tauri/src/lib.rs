@@ -34,9 +34,11 @@ use db::{
     saved_get_content, saved_insert_batch, saved_list_all, saved_query, saved_update_highlights,
     saved_update_last_read_at, saved_update_notes, DbState,
 };
+use db::feeds::feeds_get_favicons;
 use diagnostics::{
     diagnostics_export_bundle, diagnostics_log_get_path, diagnostics_log_write_entry,
-    diagnostics_performance_snapshot, start_background_monitoring, DiagnosticsState,
+    diagnostics_performance_snapshot, diagnostics_robustness_counters, start_background_monitoring,
+    DiagnosticsState,
 };
 use net::{
     feeds_abort_request, feeds_fetch, feeds_fetch_data_url, feeds_fetch_html_safe,
@@ -187,6 +189,7 @@ pub fn run() {
             diagnostics_log_get_path,
             diagnostics_log_write_entry,
             diagnostics_performance_snapshot,
+            diagnostics_robustness_counters,
             feeds_abort_request,
             feeds_count,
             feeds_create,
@@ -201,6 +204,7 @@ pub fn run() {
             feeds_store_parsed_content,
             feeds_get,
             feeds_get_by_url,
+            feeds_get_favicons,
             feeds_library_sidebar_snapshot,
             feeds_list,
             feeds_reorder_unstationed,

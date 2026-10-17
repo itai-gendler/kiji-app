@@ -11,6 +11,10 @@ import {
   scheduleSourceRefreshAfterPaint,
   waitForArticleListPaintGate,
 } from '@/services/feeds/sourceSelectionPaintGate';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+} from '@/services/diagnostics/robustnessMetrics';
 
 const createFeedPayload = (token: number): FeedSourceRefreshPayload => ({
   kind: 'feed',
@@ -35,6 +39,7 @@ describe('sourceSelectionPaintGate', () => {
     });
     vi.stubGlobal('cancelAnimationFrame', () => {});
     cancelSourceSelectionRefreshSchedule();
+    resetRobustnessMetricsForTests();
   });
 
   afterEach(() => {
@@ -63,6 +68,9 @@ describe('sourceSelectionPaintGate', () => {
 
     expect(events).toEqual(['source-local-ready', 'source-refresh-requested']);
     expect(onRefreshRequested).toHaveBeenCalledWith(payload);
+    const snapshot = getRobustnessSnapshot();
+    expect(snapshot.counters['paintGate.fallbackStart']).toBeUndefined();
+    expect(snapshot.durations['paintGate.waitMs']?.count).toBe(1);
     unsubscribe();
   });
 
@@ -155,6 +163,11 @@ describe('sourceSelectionPaintGate', () => {
 
       expect(onRefreshRequested).toHaveBeenCalledTimes(1);
       expect(onRefreshRequested).toHaveBeenCalledWith(payload);
+      const snapshot = getRobustnessSnapshot();
+      expect(snapshot.counters['paintGate.fallbackStart']).toBe(1);
+      expect(snapshot.durations['paintGate.waitMs']?.count).toBe(1);
+      expect(snapshot.durations['paintGate.waitMs']?.maxMs)
+        .toBeGreaterThanOrEqual(SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS);
     });
 
     it('starts the gate once when the frame arrives after the fallback fired', async () => {
@@ -171,6 +184,7 @@ describe('sourceSelectionPaintGate', () => {
       await vi.runAllTimersAsync();
 
       expect(onRefreshRequested).toHaveBeenCalledTimes(1);
+      expect(getRobustnessSnapshot().counters['paintGate.fallbackStart']).toBe(1);
     });
 
     it('cancels the fallback when the selection schedule is cancelled', async () => {
@@ -184,6 +198,8 @@ describe('sourceSelectionPaintGate', () => {
       await vi.runAllTimersAsync();
 
       expect(onRefreshRequested).not.toHaveBeenCalled();
+      expect(getRobustnessSnapshot().counters['paintGate.fallbackStart']).toBeUndefined();
+      expect(getRobustnessSnapshot().durations['paintGate.waitMs']).toBeUndefined();
     });
   });
 });

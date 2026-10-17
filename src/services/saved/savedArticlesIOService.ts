@@ -12,8 +12,39 @@ import {
   sidebarIndicatorOngoing,
 } from '@/services/ui/sidebarIndicatorText';
 import type { SavedArticlesExportEvent } from '@/services/saved/export/shared';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { helperTaskClient } from '@/services/tasks/helperTaskClient';
 import { HELPER_TASK_KIND } from '@/services/tasks/helperTaskContracts';
+
+/** Outcome of one saved-articles import (ZIP or CSV). */
+export interface SavedArticlesImportOutcome {
+  imported: number;
+  /** Rows skipped because the article (hash or normalized link) was already saved. */
+  skippedExisting: number;
+}
+
+const EMPTY_IMPORT_OUTCOME: SavedArticlesImportOutcome = { imported: 0, skippedExisting: 0 };
+
+/** User-facing import summary, e.g. `3 imported, 2 already saved`. */
+export function formatSavedImportOutcome(outcome: SavedArticlesImportOutcome): string {
+  const imported = `${outcome.imported} imported`;
+  return outcome.skippedExisting > 0
+    ? `${imported}, ${outcome.skippedExisting} already saved`
+    : imported;
+}
+
+/**
+ * Rust `saved_insert_batch` skips rows already saved (hash or normalized link)
+ * and returns the number inserted; the rest of the submitted rows were skipped.
+ */
+async function insertSavedRows(rows: SavedArticleRecord[]): Promise<SavedArticlesImportOutcome> {
+  if (rows.length === 0) {
+    return EMPTY_IMPORT_OUTCOME;
+  }
+  const inserted = await tauriClient.saved.insertBatch({ articles: rows });
+  const imported = Math.max(0, Math.min(rows.length, Number(inserted) || 0));
+  return { imported, skippedExisting: rows.length - imported };
+}
 
 class SavedArticlesIOService {
   private activeExportJobId: string | null = null;
@@ -85,15 +116,17 @@ class SavedArticlesIOService {
   /**
    * Import saved articles from a ZIP or CSV file using background helper tasks.
    */
-  async importSavedArticles(file: File): Promise<void> {
+  async importSavedArticles(file: File): Promise<SavedArticlesImportOutcome | null> {
     const fileName = file.name.toLowerCase();
     const isCsv = fileName.endsWith('.csv');
     const isZip = fileName.endsWith('.zip');
 
     if (!isCsv && !isZip) {
       logger.error('SavedArticlesIO', 'Unsupported file format for import. Please use .zip or .csv');
-      return;
+      return null;
     }
+
+    let outcome: SavedArticlesImportOutcome = EMPTY_IMPORT_OUTCOME;
 
     try {
       if (isZip) {
@@ -107,7 +140,7 @@ class SavedArticlesIOService {
 
         if (result.articles.length === 0) {
           logger.warn('SavedArticlesIO', 'No articles found in import file');
-          return;
+          return outcome;
         }
 
         const rows: SavedArticleRecord[] = result.articles.map((article): SavedArticleRecord => ({
@@ -135,8 +168,11 @@ class SavedArticlesIOService {
           notes: null,
         }));
 
-        await tauriClient.saved.insertBatch({ articles: rows });
-        logger.info('SavedArticlesIO', `Successfully imported ${rows.length} articles from ZIP`);
+        outcome = await insertSavedRows(rows);
+        logger.info(
+          'SavedArticlesIO',
+          `Imported ${outcome.imported} articles from ZIP (${outcome.skippedExisting} already saved)`,
+        );
       } else if (isCsv) {
         const csvText = await file.text();
         const { urls } = await helperTaskClient.runTask({
@@ -146,7 +182,7 @@ class SavedArticlesIOService {
 
         if (urls.length === 0) {
           logger.warn('SavedArticlesIO', 'No valid URLs found in CSV');
-          return;
+          return outcome;
         }
 
         logger.info('SavedArticlesIO', `Importing ${urls.length} URLs in chunks`);
@@ -161,18 +197,30 @@ class SavedArticlesIOService {
         const chunkSize = 20;
         for (let index = 0; index < urls.length; index += chunkSize) {
           const chunk = urls.slice(index, index + chunkSize);
-          await this.importUrlChunk(chunk, parser);
+          const chunkOutcome = await this.importUrlChunk(chunk, parser);
+          outcome = {
+            imported: outcome.imported + chunkOutcome.imported,
+            skippedExisting: outcome.skippedExisting + chunkOutcome.skippedExisting,
+          };
         }
       }
     } catch (error) {
       logger.error('SavedArticlesIO', 'Failed to import saved articles', { error });
+      userMessageBus.publish('export-progress', sidebarIndicatorFailed('importing', { subject: 'saved' }), {
+        durationMs: 6000,
+      });
+      return null;
     }
+
+    recordRobustnessEvent('savedImport.skippedExisting', outcome.skippedExisting);
+    userMessageBus.publish('export-progress', formatSavedImportOutcome(outcome), { durationMs: 6000 });
+    return outcome;
   }
 
   private async importUrlChunk(
     urls: string[],
     parser?: import('@/services/articles/extractors/types').ContentParser,
-  ): Promise<void> {
+  ): Promise<SavedArticlesImportOutcome> {
     try {
       const { results } = await helperTaskClient.runTask({
         kind: HELPER_TASK_KIND.SAVED_ARTICLES_BULK_URL_FETCH,
@@ -180,7 +228,7 @@ class SavedArticlesIOService {
         payload: { urls, concurrency: 3, parser },
       });
 
-      if (results.length === 0) return;
+      if (results.length === 0) return EMPTY_IMPORT_OUTCOME;
 
       const rows: SavedArticleRecord[] = results.map((metadata): SavedArticleRecord => {
         const now = new Date();
@@ -211,10 +259,15 @@ class SavedArticlesIOService {
         };
       });
 
-      await tauriClient.saved.insertBatch({ articles: rows });
-      logger.info('SavedArticlesIO', `Successfully imported chunk of ${rows.length} URLs`);
+      const outcome = await insertSavedRows(rows);
+      logger.info(
+        'SavedArticlesIO',
+        `Imported chunk: ${outcome.imported} URLs (${outcome.skippedExisting} already saved)`,
+      );
+      return outcome;
     } catch (error) {
       logger.error('SavedArticlesIO', 'Failed to background import URL chunk', { error });
+      return EMPTY_IMPORT_OUTCOME;
     }
   }
 

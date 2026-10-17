@@ -1,6 +1,7 @@
 import { sourceSelectionBus } from '@/services/feeds/sourceSelectionBus';
 import type { SourceSelectionReadyPayload } from '@/services/feeds/sourceSelectionTypes';
 import { sidebarSwitchTrace } from '@/services/performance/sidebarSwitchTrace';
+import { recordRobustnessDuration, recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 
 /** Short settle window after the first paint frames before scheduling refresh. */
 export const SOURCE_SELECTION_PAINT_GATE_TIMEOUT_MS = 48;
@@ -127,12 +128,15 @@ export const scheduleSourceRefreshAfterPaint = (
   // Without the timer fallback Phase B never ran and the selection's scheduler
   // pause was held until its 10-minute safety release.
   let paintGateStarted = false;
-  const startPaintGate = (): void => {
+  const startPaintGate = (viaFallbackTimer: boolean): void => {
     if (paintGateStarted) {
       return;
     }
     paintGateStarted = true;
     clearPaintGateStart();
+    if (viaFallbackTimer) {
+      recordRobustnessEvent('paintGate.fallbackStart');
+    }
 
     void (async () => {
       const painted = await waitForArticleListPaintGate(options.isSelectionActive, payload.token);
@@ -145,10 +149,12 @@ export const scheduleSourceRefreshAfterPaint = (
         return;
       }
 
+      const paintGateWaitMs = performance.now() - paintGateStartedAt;
+      recordRobustnessDuration('paintGate.waitMs', paintGateWaitMs);
       sidebarSwitchTrace.markDuration(
         payload.token,
         'paint-gate',
-        performance.now() - paintGateStartedAt,
+        paintGateWaitMs,
       );
       sidebarSwitchTrace.mark(payload.token, 'paint-gate-painted');
 
@@ -171,8 +177,8 @@ export const scheduleSourceRefreshAfterPaint = (
     })();
   };
 
-  paintGateFallbackTimerId = window.setTimeout(startPaintGate, SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS);
-  const rafId = window.requestAnimationFrame(startPaintGate);
+  paintGateFallbackTimerId = window.setTimeout(() => startPaintGate(true), SOURCE_SELECTION_PAINT_GATE_MAX_WAIT_MS);
+  const rafId = window.requestAnimationFrame(() => startPaintGate(false));
   if (!paintGateStarted) {
     paintGateRafId = rafId;
   }

@@ -13,6 +13,7 @@ import {
   keybindingService,
 } from '@/services/shortcuts/shortcutService';
 import { animateElementScrollTop, getScrollableBottom } from '@/utils/fixedTimeScroll';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { resolveArticleListFocusHash, resolveArticleListFocusIndex } from '../articleListKeyboardFocus';
 
 interface UseArticleListKeyboardNavigationOptions {
@@ -243,7 +244,13 @@ export const useArticleListKeyboardNavigation = ({
       });
     };
 
-    const resetHold = () => {
+    // `recordIfActive`: count a safety-net stop of an armed hold (cover, modal,
+    // modifier keyup, blur, hidden, unmount). Taps and a plain keyup release of
+    // a held key are the normal path and are not counted.
+    const resetHold = (recordIfActive = false) => {
+      if (recordIfActive && holdArmed && holdDirection !== 0) {
+        recordRobustnessEvent('ui.keyboardHoldReset');
+      }
       holdDirection = 0;
       holdArmed = false;
       nextStepAt = 0;
@@ -267,7 +274,7 @@ export const useArticleListKeyboardNavigation = ({
         // keydown after the cover closes starts a fresh hold.
         if (isArticleListCovered() || getShortcutPriorityLayer() === 'modal') {
           holdRafId = null;
-          resetHold();
+          resetHold(true);
           return;
         }
 
@@ -350,17 +357,19 @@ export const useArticleListKeyboardNavigation = ({
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (!isHoldStepKey(e)) return;
-      resetHold();
+      const isSafetyRelease = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
+        || isArticleListCovered() || getShortcutPriorityLayer() === 'modal';
+      resetHold(isSafetyRelease);
     };
 
     // Keyup never arrives if focus leaves the window (Cmd+Tab) mid-hold.
     const handleWindowBlur = () => {
-      resetHold();
+      resetHold(true);
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        resetHold();
+        resetHold(true);
       }
     };
 
@@ -384,7 +393,7 @@ export const useArticleListKeyboardNavigation = ({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearPendingTopSequence();
       cancelActiveScrollAnimation();
-      resetHold();
+      resetHold(true);
     };
   }, [articleListRef]);
 };

@@ -119,6 +119,24 @@ export async function listSidebarSnapshot(): Promise<{ feeds: Feed[]; stations: 
   };
 }
 
+export type FeedFavicon = Required<Pick<Feed, 'id' | 'favicon'>> &
+  Pick<Feed, 'faviconHasTransparency' | 'faviconBgLight' | 'faviconBgDark'>;
+
+/** Favicon columns only, for rows whose slim record says `faviconStored`. */
+export async function getFavicons(ids: string[]): Promise<FeedFavicon[]> {
+  if (ids.length === 0) {
+    return [];
+  }
+  const records = await tauriClient.feeds.getFavicons({ ids });
+  return records.map((record) => ({
+    id: record.id,
+    favicon: record.favicon,
+    faviconHasTransparency: record.faviconHasTransparency ?? undefined,
+    faviconBgLight: record.faviconBgLight ?? undefined,
+    faviconBgDark: record.faviconBgDark ?? undefined,
+  }));
+}
+
 export async function getById(id: string): Promise<Feed | null> {
   const record = await tauriClient.feeds.get({ id });
   return record ? recordToFeed(record) : null;

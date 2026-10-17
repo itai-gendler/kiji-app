@@ -16,6 +16,13 @@ import { feedNetworkDataResult } from '../helpers/feedNetworkFetchMock';
 import { clearFeedMetadataCacheForTests } from '@/services/feeds/feedMetadataCache';
 import { clearTagFeedIdsCacheForTests } from '@/services/tags/tagFeedIdsCache';
 import { logger } from '@/services/logger';
+import {
+  getRobustnessSnapshot,
+  resetRobustnessMetricsForTests,
+  type RobustnessCounterKey,
+} from '@/services/diagnostics/robustnessMetrics';
+
+const robustnessCount = (key: RobustnessCounterKey) => getRobustnessSnapshot().counters[key];
 
 vi.mock('@/stores/articleStore', () => ({
   beginSearch: vi.fn().mockResolvedValue('1'),
@@ -174,6 +181,7 @@ describe('FeedContext selectTag', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRobustnessMetricsForTests();
     clearFeedMetadataCacheForTests();
     clearTagFeedIdsCacheForTests();
     latestContext = null;
@@ -1767,6 +1775,9 @@ describe('FeedContext selectTag', () => {
       });
       expect(failureWrites()).toEqual([]);
       expect(latestContext!.isLoadingArticles).toBe(false);
+      expect(robustnessCount('feedContext.nativeFailureNotReRecorded')).toBeGreaterThanOrEqual(1);
+      // Frames still paint in jsdom, so the yield resolves via rAF, not its cap.
+      expect(robustnessCount('frameYield.timeout')).toBeUndefined();
     });
 
     it('does not re-record a native single-feed refresh failure', async () => {
@@ -1790,6 +1801,7 @@ describe('FeedContext selectTag', () => {
         expect(latestContext!.isLoadingArticles).toBe(false);
       });
       expect(failureWrites()).toEqual([]);
+      expect(robustnessCount('feedContext.nativeFailureNotReRecorded')).toBe(1);
     });
   });
 
@@ -1830,6 +1842,7 @@ describe('FeedContext selectTag', () => {
         expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1']);
       });
       expect(feedsFetcher.fetchFeedNetworkWithCache).not.toHaveBeenCalled();
+      expect(robustnessCount('feedContext.asyncPhaseFailed')).toBeGreaterThanOrEqual(1);
     });
 
     it('logs a failed smart view query and clears loading onto the empty view', async () => {
@@ -1850,6 +1863,7 @@ describe('FeedContext selectTag', () => {
         expect(latestContext!.isLoadingArticles).toBe(false);
       });
       expect(latestContext!.articles).toEqual([]);
+      expect(robustnessCount('feedContext.asyncPhaseFailed')).toBeGreaterThanOrEqual(1);
     });
 
     it('re-stashes the header COUNT when the switch total reconcile fails', async () => {
@@ -1880,6 +1894,7 @@ describe('FeedContext selectTag', () => {
         );
       });
       expect(latestContext!.articlesTotalKnown).toBe(false);
+      expect(robustnessCount('feedContext.asyncPhaseFailed')).toBeGreaterThanOrEqual(1);
       const failedCounts = countQueries;
 
       // A later idle flush (search exit here) retries the COUNT once.
@@ -1952,6 +1967,9 @@ describe('FeedContext selectTag', () => {
         expect(nativeFeedRefresh.runNativeFeedRefresh).toHaveBeenCalledWith(expect.objectContaining({
           feedIds: ['feed-news'],
         }));
+      }, 3000);
+      await waitForExpectation(() => {
+        expect(robustnessCount('frameYield.timeout')).toBeGreaterThanOrEqual(1);
       }, 3000);
     });
   });

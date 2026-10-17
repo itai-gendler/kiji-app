@@ -12,6 +12,7 @@ import { settingsManager } from '@/services/settings';
 import { createTaskPool } from '@/services/tasks/taskPool';
 import { logger } from '@/services/logger';
 import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
+import { recordRobustnessDuration, recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { getE2eConfig } from '@/services/e2e/e2eHarness';
 import { createSchedulerRunPlan } from './schedulerRunPlan';
 import { getSchedulerConcurrency, setSchedulerRuntimeUiState } from './schedulerConcurrency';
@@ -78,6 +79,11 @@ interface SchedulerCycleStats {
   failedFeeds: number;
 }
 
+/** Unscoped (full-library) cycles; `excludeFeedIds` alone still covers the library. */
+const isFullLibraryScope = (scope: SchedulerCycleScope): boolean => (
+  !scope.onlyFeedIds || scope.onlyFeedIds.size === 0
+);
+
 interface ActiveStationFocus {
   sourceKey: string;
   feedIds: Set<string>;
@@ -87,6 +93,15 @@ class FeedSchedulerService {
   private cycleInProgress = false;
   private pendingCycleTick = false;
   private pendingCycleReason: PendingCycleReason | null = null;
+  /**
+   * Reason of an owed full-library (unscoped) cycle — an interrupted sync-all,
+   * a deferred interval/startup/resume tick. Tracked apart from scoped
+   * boost/import work so a scoped follow-up cannot consume it; cleared only
+   * when an unscoped cycle starts. At most one full follow-up is ever owed.
+   */
+  private pendingFullCycleReason: PendingCycleReason | null = null;
+  /** A scoped cycle ran while a full cycle was owed; the next full cycle is that follow-up. */
+  private fullFollowUpPreserved = false;
   private abortController: AbortController | null = null;
   private lifecycleId = 0;
   private listeners = new Set<(event: SchedulerEvent) => void>();
@@ -104,6 +119,8 @@ class FeedSchedulerService {
   private boosts = new Map<string, number>();
   private stationSelectionPauseDepth = 0;
   private stationSelectionPauseTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Wall-clock start of the current station pause (depth 0 → 1); null when not paused. */
+  private stationSelectionPauseStartedAt: number | null = null;
   private activeStationFocus: ActiveStationFocus | null = null;
   private skipOnceFeedIds = new Set<string>();
   private pendingImportRefreshFeedIds: Set<string> | null = null;
@@ -194,6 +211,7 @@ class FeedSchedulerService {
   pauseForStationSelection(): void {
     if (this.stationSelectionPauseDepth === 0) {
       logger.info('Scheduler', 'Pausing background refresh for station selection');
+      this.stationSelectionPauseStartedAt = Date.now();
       if (this.cycleInProgress) {
         this.markPendingCycleTick('interval-tick');
         this.invalidateActiveCycle();
@@ -220,6 +238,7 @@ class FeedSchedulerService {
     }
 
     this.clearStationSelectionPauseTimer();
+    this.recordStationSelectionPauseHeld();
     logger.info('Scheduler', 'Resuming background refresh after station selection');
     if (this.deferStartupCycleUntilInteraction) {
       this.ensureStartupDeferFallbackTimer(this.lifecycleId);
@@ -235,7 +254,15 @@ class FeedSchedulerService {
 
     this.clearStationSelectionPauseTimer();
     this.stationSelectionPauseDepth = 0;
+    const heldMs = this.recordStationSelectionPauseHeld();
     logger.info('Scheduler', 'Released station-selection scheduler pause', { reason });
+    if (reason === 'timeout') {
+      recordRobustnessEvent('scheduler.stationPauseSafetyRelease');
+      logger.warn('Scheduler', 'Station-selection scheduler pause hit the safety timeout', {
+        heldMs,
+        maxPauseMs: STATION_SELECTION_PAUSE_MAX_MS,
+      });
+    }
 
     if (reason === 'selection-changed') {
       // Preserve pending import boosts across selection hops; only clear the
@@ -319,9 +346,10 @@ class FeedSchedulerService {
     this.clearDeferredCycleRetryTimer();
     this.clearSleepGapHeartbeat();
     this.cycleInProgress = false;
-    this.pendingCycleTick = false;
-    this.pendingCycleReason = null;
+    this.clearAllPendingCycles();
+    this.fullFollowUpPreserved = false;
     this.stationSelectionPauseDepth = 0;
+    this.stationSelectionPauseStartedAt = null;
     this.clearStationSelectionPauseTimer();
     this.activeStationFocus = null;
     this.skipOnceFeedIds.clear();
@@ -376,6 +404,8 @@ class FeedSchedulerService {
       && this.nativeDriverActive
       && this.nativeDriverMode === mode
     ) {
+      recordRobustnessEvent('scheduler.reconfigureSkippedSameMode');
+      logger.debug('Scheduler', 'Skipped same-mode scheduler reconfigure', { mode });
       return;
     }
 
@@ -498,7 +528,9 @@ class FeedSchedulerService {
         bypassFailureBackoff: true,
         needsResumeCatchUp: this.needsResumeCatchUp,
       });
-      this.pendingCycleTick = false;
+      // The rest-of-library pass below is the full cycle; do not let the
+      // station-first scoped run re-arm an owed full cycle ahead of it.
+      this.clearAllPendingCycles();
       await this.runScheduledCycle(lifecycleId, {
         ...resumeScope,
         onlyFeedIds: stationFeedIds,
@@ -519,7 +551,7 @@ class FeedSchedulerService {
       bypassFailureBackoff: true,
       needsResumeCatchUp: this.needsResumeCatchUp,
     });
-    this.pendingCycleTick = false;
+    this.clearAllPendingCycles();
     await this.runScheduledCycle(lifecycleId, {
       ...resumeScope,
       excludeFeedIds: stationFeedIds && stationFeedIds.size > 0 ? stationFeedIds : undefined,
@@ -576,11 +608,43 @@ class FeedSchedulerService {
   private markPendingCycleTick(reason: PendingCycleReason): void {
     this.pendingCycleTick = true;
     this.pendingCycleReason = mergePendingCycleReason(this.pendingCycleReason, reason);
+    if (reason !== 'import-boost') {
+      // Every non-boost reason owes a full-library pass; boosts only owe the
+      // scoped feeds in pendingImportRefreshFeedIds.
+      this.pendingFullCycleReason = mergePendingCycleReason(this.pendingFullCycleReason, reason);
+    }
   }
 
+  /**
+   * Clears the scoped/boost pending tick. An owed full-library cycle survives
+   * (re-armed under its own reason) until an unscoped cycle actually starts,
+   * so a station-scoped boost run cannot consume the interrupted sync-all.
+   */
   private clearPendingCycleTick(): void {
+    if (this.pendingFullCycleReason !== null) {
+      this.pendingCycleTick = true;
+      this.pendingCycleReason = this.pendingFullCycleReason;
+      return;
+    }
     this.pendingCycleTick = false;
     this.pendingCycleReason = null;
+  }
+
+  private clearAllPendingCycles(): void {
+    this.pendingCycleTick = false;
+    this.pendingCycleReason = null;
+    this.pendingFullCycleReason = null;
+  }
+
+  private recordStationSelectionPauseHeld(): number | null {
+    const startedAt = this.stationSelectionPauseStartedAt;
+    this.stationSelectionPauseStartedAt = null;
+    if (startedAt === null) {
+      return null;
+    }
+    const heldMs = Math.max(0, Date.now() - startedAt);
+    recordRobustnessDuration('scheduler.stationPauseHeldMs', heldMs);
+    return heldMs;
   }
 
   private clearDeferredCycleRetryTimer(): void {
@@ -757,9 +821,13 @@ class FeedSchedulerService {
     notModifiedFeeds: number;
     failedFeeds: number;
     executedFeedCount: number;
-  }): void {
+  }, isFullCycle: boolean): void {
     if (stats.changedFeeds > 0 || stats.notModifiedFeeds > 0) {
-      this.needsResumeCatchUp = false;
+      // Only a full-library pass makes the library "fresh"; a scoped station
+      // or import run must not satisfy resume catch-up for everything else.
+      if (isFullCycle) {
+        this.needsResumeCatchUp = false;
+      }
       return;
     }
 
@@ -1167,7 +1235,25 @@ class FeedSchedulerService {
       : undefined;
     const pendingReason = this.pendingCycleReason;
     const queueDepth = this.pendingCycleTick ? 1 : 0;
-    this.clearPendingCycleTick();
+    const isFullCycle = isFullLibraryScope(scope);
+    if (isFullCycle) {
+      if (this.fullFollowUpPreserved) {
+        this.fullFollowUpPreserved = false;
+        recordRobustnessEvent('scheduler.fullFollowUpCycle');
+        logger.info('Scheduler', 'Running preserved full-library follow-up cycle', {
+          mode: this.mode,
+          cycleId,
+          pendingReason,
+        });
+      }
+      this.clearAllPendingCycles();
+    } else {
+      if (this.pendingFullCycleReason !== null) {
+        this.fullFollowUpPreserved = true;
+      }
+      // Keeps an owed full cycle armed for after this scoped run.
+      this.clearPendingCycleTick();
+    }
     this.beginCycleDrain();
     this.cycleInProgress = true;
     this.lastCycleStartedAt = Date.now();
@@ -1224,7 +1310,7 @@ class FeedSchedulerService {
       }));
 
       const frontloadFeedIds = scope.onlyFeedIds ?? this.activeStationFocus?.feedIds;
-      const skipFeedIdsForThisCycle = this.consumeSkipOnceFeedIds();
+      const skipFeedIdsForThisCycle = this.consumeSkipOnceFeedIds(scope);
       const now = Date.now();
       this.pruneExpiredBoosts(now);
       const { prioritized, skippedBackoffCount, skippedSuppressedCount } = createSchedulerRunPlan(
@@ -1280,7 +1366,7 @@ class FeedSchedulerService {
         notModifiedFeeds: cycleStats.notModifiedFeeds,
         failedFeeds: cycleStats.failedFeeds,
         executedFeedCount: prioritized.length,
-      });
+      }, isFullCycle);
 
       logger.info('Scheduler', 'Background refresh cycle stats', {
         totalFeeds,
@@ -1319,13 +1405,18 @@ class FeedSchedulerService {
         return;
       }
 
-      this.lastCycleCompletedAt = Date.now();
+      // Only a completed full-library pass makes the library fresh for the
+      // interval-overdue / catch-up checks; scoped station or import runs do not.
+      if (isFullCycle) {
+        this.lastCycleCompletedAt = Date.now();
+      }
       this.consecutiveDeferredTicks = 0;
       this.emit({ type: 'cycle-complete', cycleId });
       logger.info('Scheduler', 'Background refresh cycle completed', {
         mode: this.mode,
         cycleId,
         durationMs,
+        fullLibrary: isFullCycle,
       });
 
       if (scope.onlyFeedIds && scope.onlyFeedIds.size > 0) {
@@ -1344,7 +1435,7 @@ class FeedSchedulerService {
   }): Promise<void> {
     const { lifecycleId, cycleId, scope, signal } = input;
     const frontloadFeedIds = scope.onlyFeedIds ?? this.activeStationFocus?.feedIds;
-    const skipFeedIdsForThisCycle = this.consumeSkipOnceFeedIds();
+    const skipFeedIdsForThisCycle = this.consumeSkipOnceFeedIds(scope);
     const now = Date.now();
     this.pruneExpiredBoosts(now);
     const nativeCycleKey = `native-${cycleId}`;
@@ -1404,12 +1495,16 @@ class FeedSchedulerService {
       const changedFeeds = result.feedResults.filter((feed) => feed.status === 'changed').length;
       const notModifiedFeeds = result.feedResults.filter((feed) => feed.status === 'not-modified').length;
       const failedFeeds = result.feedResults.filter((feed) => feed.status === 'failed').length;
+      const cancelledFeeds = result.feedResults.filter((feed) => (
+        feed.error !== undefined
+        && parseStructuredCommandError(feed.error)?.code === 'FEED_REQUEST_CANCELLED'
+      )).length;
       this.noteCycleFetchOutcome({
         changedFeeds,
         notModifiedFeeds,
         failedFeeds,
         executedFeedCount: result.feedResults.length,
-      });
+      }, isFullLibraryScope(scope));
 
       logger.info('Scheduler', 'Native background refresh cycle stats', {
         cycleId,
@@ -1418,6 +1513,7 @@ class FeedSchedulerService {
         changedFeeds,
         notModifiedFeeds,
         failedFeeds,
+        cancelledFeeds,
         insertedArticles: result.insertedArticles,
         activeStationFeedCount: frontloadFeedIds?.size ?? 0,
         bypassFailureBackoff: scope.bypassFailureBackoff === true,
@@ -1557,6 +1653,7 @@ class FeedSchedulerService {
     try {
       syncedCounts = await articleStore.syncFeedCountsBatch(feedIds);
     } catch (error) {
+      recordRobustnessEvent('scheduler.countSyncFailed');
       logger.warn('Scheduler', 'Failed to sync feed counts after refresh cycle', {
         error,
         cycleId,
@@ -1676,6 +1773,7 @@ class FeedSchedulerService {
         || (error instanceof Error && error.name === 'AbortError')
         || parseStructuredCommandError(error)?.code === 'FEED_REQUEST_CANCELLED'
       ) {
+        recordRobustnessEvent('scheduler.cancelledFetchSkipped');
         return;
       }
 
@@ -1695,9 +1793,21 @@ class FeedSchedulerService {
     }
   }
 
-  private consumeSkipOnceFeedIds(): Set<string> | undefined {
+  private consumeSkipOnceFeedIds(scope: SchedulerCycleScope): Set<string> | undefined {
     if (this.skipOnceFeedIds.size === 0) {
       return undefined;
+    }
+
+    // A scoped run ahead of an owed full follow-up only consumes the
+    // suppressions inside its scope; the rest stay for that full cycle.
+    if (!isFullLibraryScope(scope) && this.pendingFullCycleReason !== null && scope.onlyFeedIds) {
+      const skipFeedIds = new Set<string>();
+      for (const feedId of scope.onlyFeedIds) {
+        if (this.skipOnceFeedIds.delete(feedId)) {
+          skipFeedIds.add(feedId);
+        }
+      }
+      return skipFeedIds.size > 0 ? skipFeedIds : undefined;
     }
 
     const skipFeedIds = new Set(this.skipOnceFeedIds);

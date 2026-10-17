@@ -1,3 +1,4 @@
+use crate::diagnostics::robustness::{record, RobustnessCounter};
 use crate::scheduler::types::SchedulerFeedEntry;
 
 pub const FEED_FAILURE_BACKOFF_BASE_MS: i64 = 5 * 60_000;
@@ -33,14 +34,23 @@ pub fn get_feed_failure_backoff_ms(failures: i64, update_frequency_score: f64) -
     }
 
     let max_ms = get_feed_failure_backoff_max_ms(update_frequency_score);
-    // Checked math: large failure counts would overflow the exponential and
-    // wrap to a non-positive backoff, so treat overflow as "at the cap".
+    match checked_exponential_backoff_ms(failures) {
+        Some(exponential) => exponential.min(max_ms),
+        None => {
+            // Checked math: large failure counts would overflow the exponential
+            // and wrap to a non-positive backoff, so treat overflow as "at the cap".
+            record(RobustnessCounter::BackoffSaturated);
+            max_ms
+        }
+    }
+}
+
+/// `BASE * 2^(failures - 1)`, or `None` when that overflows `i64`.
+fn checked_exponential_backoff_ms(failures: i64) -> Option<i64> {
     let exponent = u32::try_from(failures - 1).unwrap_or(u32::MAX);
-    let exponential = 2_i64
+    2_i64
         .checked_pow(exponent)
         .and_then(|factor| FEED_FAILURE_BACKOFF_BASE_MS.checked_mul(factor))
-        .unwrap_or(max_ms);
-    exponential.min(max_ms)
 }
 
 pub fn get_feed_refresh_block(
@@ -146,5 +156,20 @@ mod tests {
                 assert_eq!(get_feed_failure_backoff_ms(failures, score), max_ms);
             }
         }
+    }
+
+    #[test]
+    fn backoff_saturation_is_only_the_overflow_path() {
+        // Capped by min(max_ms) without overflow: not saturated.
+        for failures in [1, 5, 12, 45] {
+            assert!(checked_exponential_backoff_ms(failures).is_some(), "failures={failures}");
+        }
+        for failures in [46, 64, 1000, i64::MAX] {
+            assert_eq!(checked_exponential_backoff_ms(failures), None, "failures={failures}");
+        }
+
+        let before = crate::diagnostics::robustness::snapshot().backoff_saturated;
+        assert_eq!(get_feed_failure_backoff_ms(1000, 0.5), FEED_FAILURE_BACKOFF_MAX_MS);
+        assert!(crate::diagnostics::robustness::snapshot().backoff_saturated > before);
     }
 }

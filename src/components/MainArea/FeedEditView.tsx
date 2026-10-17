@@ -17,6 +17,7 @@ import {
 } from '@/services/feeds/opmlUiWorkflow';
 import { articlesManager } from '@/services/articles/articlesManager';
 import { tagsManager } from '@/services/tags/tagsManager';
+import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import {
   isArticleListSearchShortcut,
   isCloseOnEscapeShortcut,
@@ -2474,6 +2475,10 @@ export const FeedEditView: React.FC<FeedEditViewProps> = ({ layout: _layout = '2
       }
 
       if (!stationDeleted) {
+        if (feedsToDelete.length > 0) {
+          // Feeds were committed as deleted before the station delete failed.
+          recordRobustnessEvent('ui.deleteFlowPartialFailure');
+        }
         if (deletedStation && feedsToDelete.length > 0) {
           feedLibraryMutationBus.publishStationPatched(deletedStation.name, {
             name: deletedStation.name,
