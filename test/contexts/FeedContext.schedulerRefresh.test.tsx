@@ -7,6 +7,7 @@ import type { Article } from '@/types/article';
 import { tagsManager } from '@/services/tags/tagsManager';
 import * as articleStore from '@/stores/articleStore';
 import * as feedStore from '@/stores/feedStore';
+import { logger } from '@/services/logger';
 import {
   cancelSourceSelectionRefreshSchedule,
   SOURCE_SELECTION_MIN_REFRESH_DELAY_MS,
@@ -830,6 +831,121 @@ describe('FeedContext scheduler refresh', () => {
       expect(latestContext!.articles.map((article) => article.hash)).toContain('hash-new');
       expect(latestContext!.articles.map((article) => article.hash)).toContain('hash-more');
       expect(Array.from(latestContext!.newArticleHashes)).toContain('hash-new');
+    });
+  });
+
+  describe('async failure containment', () => {
+    it('keeps the scheduler flush alive after a failed background list query', async () => {
+      const initialArticles = [createArticle('hash-a1', 'feed-1')];
+      const refreshedArticles = [createArticle('hash-a2', 'feed-1'), ...initialArticles];
+
+      (articleStore.query as vi.Mock)
+        .mockResolvedValueOnce({ articles: initialArticles, total: initialArticles.length })
+        .mockRejectedValueOnce(new Error('database is locked'))
+        .mockResolvedValue({ articles: refreshedArticles, total: refreshedArticles.length });
+
+      await renderProvider();
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+      await act(async () => {
+        await latestContext!.selectFeed('feed-1', 'https://feed-1.example.com/rss.xml', 'Feed 1');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1']);
+      });
+
+      await act(async () => {
+        __emitSchedulerEvent({ type: 'feed-updated', feedId: 'feed-1', newArticleCount: 1 });
+        __emitSchedulerEvent({ type: 'cycle-complete' });
+      });
+      await waitForExpectation(() => {
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Background list refresh failed',
+          expect.objectContaining({ sourceKey: 'feed:feed-1' }),
+        );
+      });
+      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1']);
+
+      // The next cycle still publishes: the failure did not wedge the flush.
+      await act(async () => {
+        __emitSchedulerEvent({ type: 'feed-updated', feedId: 'feed-1', newArticleCount: 1 });
+        __emitSchedulerEvent({ type: 'cycle-complete' });
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a2', 'hash-a1']);
+      });
+    });
+
+    it('logs a failed station relevance lookup instead of rejecting the flush', async () => {
+      const stationArticles = [createArticle('hash-a1', 'feed-1')];
+      (tagsManager.getFeedsByTag as vi.Mock).mockResolvedValue(['feed-1']);
+      (articleStore.query as vi.Mock).mockResolvedValue({
+        articles: stationArticles,
+        total: stationArticles.length,
+      });
+
+      await renderProvider();
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+      await act(async () => {
+        await latestContext!.selectTag('Tech');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1']);
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      });
+
+      (tagsManager.getFeedsByTag as vi.Mock).mockRejectedValueOnce(new Error('ipc closed'));
+      await act(async () => {
+        __emitSchedulerEvent({ type: 'feed-updated', feedId: 'feed-1', newArticleCount: 1 });
+        __emitSchedulerEvent({ type: 'cycle-complete' });
+      });
+      await waitForExpectation(() => {
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Scheduler UI flush failed',
+          expect.objectContaining({ sourceKey: 'tag:Tech' }),
+        );
+      });
+    });
+
+    it('restores the non-search list when the search-exit re-query fails', async () => {
+      const feedArticles = [createArticle('hash-a1', 'feed-1'), createArticle('hash-a2', 'feed-1')];
+      const searchHits = [createArticle('hash-a2', 'feed-1')];
+      (articleStore.query as vi.Mock).mockImplementation((query: { searchText?: string }) => (
+        Promise.resolve(query.searchText
+          ? { articles: searchHits, total: searchHits.length }
+          : { articles: feedArticles, total: feedArticles.length })
+      ));
+
+      await renderProvider();
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+      await act(async () => {
+        await latestContext!.selectFeed('feed-1', 'https://feed-1.example.com/rss.xml', 'Feed 1');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1', 'hash-a2']);
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      });
+
+      await act(async () => {
+        await latestContext!.searchCurrentSource('needle');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a2']);
+      });
+
+      (articleStore.query as vi.Mock).mockRejectedValue(new Error('database is locked'));
+      await act(async () => {
+        await latestContext!.clearArticleListSearch();
+      });
+
+      expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1', 'hash-a2']);
+      expect(latestContext!.searchStatus).toBe('idle');
+      expect(logger.warn).toHaveBeenCalledWith(
+        'FeedContext',
+        'Search-exit list re-query failed',
+        expect.objectContaining({ sourceKey: 'feed:feed-1' }),
+      );
     });
   });
 });

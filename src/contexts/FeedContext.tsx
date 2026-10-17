@@ -259,6 +259,25 @@ type FeedNetworkRefreshResult = {
   inserted: number;
 };
 
+/**
+ * A native-ingestion feed failure. Rust `record_feed_failure` has already
+ * persisted `consecutive_failures + 1`, so the renderer must not record it
+ * again (a second write re-reads the bumped row and doubles the backoff).
+ */
+class NativeFeedRefreshFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NativeFeedRefreshFailure';
+  }
+}
+
+const logNativeFeedRefreshFailure = (feedId: string, error: string): void => {
+  logger.warn('FeedContext', 'Feed fetch failed from UI refresh (native recorded)', {
+    feedId,
+    error,
+  });
+};
+
 // ─── Specialized Context Types ───
 
 interface NavigationState {
@@ -1129,7 +1148,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           const feedResult = nativeResult.feedResults.find((result) => result.feedId === feed.id);
           if (feedResult?.error) {
-            throw new Error(feedResult.error);
+            throw new NativeFeedRefreshFailure(feedResult.error);
           }
 
           const inserted = nativeResult.insertedByFeedId.get(feed.id) ?? 0;
@@ -2124,11 +2143,22 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
       }
       const reloadEpoch = listReloadEpochRef.current;
-      const { total: freshTotal } = await articleStore.query({
-        ...tagQuery,
-        limit: 1,
-        includeTotal: true,
-      });
+      let freshTotal: number;
+      try {
+        ({ total: freshTotal } = await articleStore.query({
+          ...tagQuery,
+          limit: 1,
+          includeTotal: true,
+        }));
+      } catch (error) {
+        // Re-stash like the full path so the next idle flush retries the COUNT
+        // instead of leaving the header total unknown with nothing pending.
+        logger.warn('FeedContext', 'Switch header COUNT reconcile failed', { sourceKey, token, error });
+        if (isSelectionActive(token) && pendingSwitchVisibleReconcileRef.current === null) {
+          pendingSwitchVisibleReconcileRef.current = { token, sourceKey, tagQuery, mode };
+        }
+        return;
+      }
       if (!isSelectionActive(token) || reloadEpoch !== listReloadEpochRef.current) {
         return;
       }
@@ -2304,10 +2334,9 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     backgroundRefreshInFlightRef.current = true;
+    let nextSource: RefreshSourceDescriptor | null = source;
 
     try {
-      let nextSource: RefreshSourceDescriptor | null = source;
-
       while (nextSource) {
         if (isArticleViewTransitioning() || loadMoreInFlightRef.current) {
           pendingBackgroundRefreshSourceKeyRef.current = nextSource.key;
@@ -2445,6 +2474,17 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         nextSource = pendingSourceKey !== null && latestSource?.key === pendingSourceKey
           ? latestSource
           : null;
+      }
+    } catch (error) {
+      // Callers fire-and-forget. Keep the source pending so the next idle
+      // trigger (scroll idle, overlay close, load-more settle) retries once;
+      // those triggers are event-driven, so a persistent failure cannot spin.
+      logger.warn('FeedContext', 'Background list refresh failed', {
+        sourceKey: nextSource?.key ?? source.key,
+        error,
+      });
+      if (nextSource && activeSourceRef.current?.key === nextSource.key) {
+        pendingBackgroundRefreshSourceKeyRef.current = nextSource.key;
       }
     } finally {
       backgroundRefreshInFlightRef.current = false;
@@ -2702,6 +2742,10 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           if (error instanceof Error && error.name === 'AbortError') {
             return 0;
           }
+          if (error instanceof NativeFeedRefreshFailure) {
+            logNativeFeedRefreshFailure(feed.id, error.message);
+            return 0;
+          }
           await recordFeedRefreshFailure(feed, error);
           return 0;
         } finally {
@@ -2742,10 +2786,9 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
           for (const feedResult of nativeResult.feedResults) {
             if (feedResult.error) {
-              const feed = await feedsManager.getFeedById(feedResult.feedId);
-              if (feed) {
-                await recordFeedRefreshFailure(feed, new Error(feedResult.error));
-              }
+              // Rust already persisted the failure; re-recording here read the
+              // bumped row back and doubled the station feed's backoff.
+              logNativeFeedRefreshFailure(feedResult.feedId, feedResult.error);
               continue;
             }
 
@@ -3279,7 +3322,11 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (error instanceof Error && error.name === 'AbortError') {
           return;
         }
-        await recordFeedRefreshFailure(feedMeta, error);
+        if (error instanceof NativeFeedRefreshFailure) {
+          logNativeFeedRefreshFailure(feedMeta.id, error.message);
+        } else {
+          await recordFeedRefreshFailure(feedMeta, error);
+        }
         throw error;
       } finally {
         releaseQueuedFeed();
@@ -3477,6 +3524,12 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       requeueActiveSearchForSource({ type: 'tag', key: sourceKey, tagName });
       sourceSelectionBus.publishRefreshSettled(token, sourceKey, insertedCount);
       opmlWorkflowService.scheduleMissingFaviconsAfterStationSelection(feedIds);
+    } catch (error) {
+      // Phase B is fire-and-forget; a count-sync / reconcile IPC failure must
+      // not surface as an unhandled rejection. Loading cleanup stays in finally.
+      if (!(error instanceof Error && error.name === 'AbortError')) {
+        logger.warn('FeedContext', 'Station network refresh phase failed', { sourceKey, token, error });
+      }
     } finally {
       // Cold deferred SQLite may still own the skeleton; this helper either
       // clears+resumes or defers resume until Phase A finishes.
@@ -3856,6 +3909,8 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             enrichedArticleTotal: total,
           });
         }
+      } catch (error) {
+        logger.warn('FeedContext', 'Smart view query failed', { viewType: type, token, error });
       } finally {
         if (isSelectionActive(token)) {
           collectionDispatch({ type: 'SET_LOADING', payload: { isSavedListLoading: false, } });
@@ -3894,6 +3949,8 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         cachedArticleCount: list.length,
         cachedArticleTotal: total,
       });
+    } catch (error) {
+      logger.warn('FeedContext', 'Smart view query failed', { viewType: type, token, error });
     } finally {
       if (isSelectionActive(token)) {
         collectionDispatch({
@@ -4440,15 +4497,25 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       },
     });
 
-    if (activeSearchEpoch !== null) {
-      await articleStore.cancelSearch(activeSearchEpoch);
-    }
-    if (!source || !isFeedProviderMountedRef.current) {
+    const visibleCount = Math.max(snapshot.list.length, SMART_VIEW_ARTICLE_LIMIT);
+    let list: Article[];
+    let total: number;
+    let query: ArticleQuery | null;
+    try {
+      if (activeSearchEpoch !== null) {
+        await articleStore.cancelSearch(activeSearchEpoch);
+      }
+      if (!source || !isFeedProviderMountedRef.current) {
+        return;
+      }
+
+      ({ articles: list, total, query } = await queryArticleListSource(source, visibleCount));
+    } catch (error) {
+      // The non-search snapshot is already back on screen; the header bar
+      // fires this without awaiting, so a failed re-query only logs.
+      logger.warn('FeedContext', 'Search-exit list re-query failed', { sourceKey: source?.key ?? null, error });
       return;
     }
-
-    const visibleCount = Math.max(snapshot.list.length, SMART_VIEW_ARTICLE_LIMIT);
-    const { articles: list, total, query } = await queryArticleListSource(source, visibleCount);
     const activeSource = getRefreshSourceDescriptorFromPrevNav(prevNavRef.current)
       ?? activeSourceRef.current;
     if (
@@ -4805,9 +4872,18 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         const activeSource = activeSourceRef.current;
         if (activeSource && feedUpdates.size > 0) {
-          const isRelevant = await isSchedulerUpdateRelevantToSource(activeSource, feedUpdates);
-          if (isRelevant) {
-            await applyBackgroundRefreshForSource(activeSource);
+          try {
+            const isRelevant = await isSchedulerUpdateRelevantToSource(activeSource, feedUpdates);
+            if (isRelevant) {
+              await applyBackgroundRefreshForSource(activeSource);
+            }
+          } catch (error) {
+            // One failed station feed-id lookup must not abort the batch loop
+            // (updates queued mid-flush would wait for the next scheduler event).
+            logger.warn('FeedContext', 'Scheduler UI flush failed', {
+              sourceKey: activeSource.key,
+              error,
+            });
           }
         }
 

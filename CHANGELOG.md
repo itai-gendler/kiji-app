@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- A feed that fails to refresh while you open its station no longer waits twice as long before KiJi tries it again.
+- Rare database or connection hiccups while switching stations, opening smart views, syncing in the background or leaving a search no longer leave errors in the log; the list retries on your next scroll or interaction.
+- Opening a station no longer re-reads every feed in it just to look for missing icons.
+- Adding a feed no longer reports a failure when the feed was added but its first articles or icon could not be saved; KiJi opens the new feed and loads its articles.
+
 ## [1.5.0] - 2026-10-16
 
 ### Changed

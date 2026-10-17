@@ -15,6 +15,7 @@ import * as feedStore from '@/stores/feedStore';
 import { feedNetworkDataResult } from '../helpers/feedNetworkFetchMock';
 import { clearFeedMetadataCacheForTests } from '@/services/feeds/feedMetadataCache';
 import { clearTagFeedIdsCacheForTests } from '@/services/tags/tagFeedIdsCache';
+import { logger } from '@/services/logger';
 
 vi.mock('@/stores/articleStore', () => ({
   beginSearch: vi.fn().mockResolvedValue('1'),
@@ -1698,6 +1699,209 @@ describe('FeedContext selectTag', () => {
       });
 
       expect(reconcileStyleQueryCount).toBe(0);
+    });
+  });
+
+  describe('native ingestion failure backoff', () => {
+    beforeEach(() => {
+      (isNativeFeedIngestionEnabled as unknown as Mock).mockReturnValue(true);
+      (tagsManager.getFeedsByTag as vi.Mock).mockResolvedValue(['feed-news']);
+      (feedStore.getAll as vi.Mock).mockResolvedValue([stationFeed('feed-news')]);
+      // Rust `record_feed_failure` already bumped the row before the renderer reads it.
+      (feedsManager.getFeedById as vi.Mock).mockResolvedValue(
+        stationFeed('feed-news', { consecutiveFailures: 1 }),
+      );
+      (feedStore.getById as vi.Mock).mockResolvedValue(stationFeed('feed-news'));
+      vi.spyOn(nativeFeedRefresh, 'runNativeFeedRefresh').mockResolvedValue({
+        insertedArticles: 0,
+        feedResults: [{ feedId: 'feed-news', status: 'failed', error: 'timeout' }],
+        insertedByFeedId: new Map(),
+      });
+    });
+
+    afterEach(() => {
+      (isNativeFeedIngestionEnabled as unknown as Mock).mockReturnValue(false);
+      vi.mocked(nativeFeedRefresh.runNativeFeedRefresh).mockRestore();
+    });
+
+    const renderProvider = async () => {
+      act(() => {
+        root.render(
+          <FeedProvider>
+            <Probe />
+          </FeedProvider>
+        );
+      });
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    };
+
+    const failureWrites = () => (feedsManager.updateFeed as vi.Mock).mock.calls.filter(
+      ([, updates]) => (updates as { consecutiveFailures?: number }).consecutiveFailures !== undefined,
+    );
+
+    it('does not re-record a native station refresh failure that Rust already persisted', async () => {
+      await renderProvider();
+
+      await act(async () => {
+        void latestContext!.selectTag('News');
+      });
+      await waitForExpectation(() => {
+        expect(latestContext!.selectedTag).toBe('News');
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      });
+
+      // Same-station re-click runs the foreground (manual) native refresh.
+      await act(async () => {
+        void latestContext!.selectTag('News');
+      });
+
+      await waitForExpectation(() => {
+        expect(nativeFeedRefresh.runNativeFeedRefresh).toHaveBeenCalledWith(expect.objectContaining({
+          feedIds: ['feed-news'],
+        }));
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Feed fetch failed from UI refresh (native recorded)',
+          { feedId: 'feed-news', error: 'timeout' },
+        );
+      });
+      expect(failureWrites()).toEqual([]);
+      expect(latestContext!.isLoadingArticles).toBe(false);
+    });
+
+    it('does not re-record a native single-feed refresh failure', async () => {
+      await renderProvider();
+
+      await act(async () => {
+        void latestContext!.selectFeed('feed-news', 'https://feed-news.example.com', 'feed-news', {
+          forceNetwork: true,
+        });
+      });
+
+      await waitForExpectation(() => {
+        expect(nativeFeedRefresh.runNativeFeedRefresh).toHaveBeenCalledWith(expect.objectContaining({
+          feedIds: ['feed-news'],
+        }));
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Feed fetch failed from UI refresh (native recorded)',
+          { feedId: 'feed-news', error: 'timeout' },
+        );
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      });
+      expect(failureWrites()).toEqual([]);
+    });
+  });
+
+  describe('async failure containment', () => {
+    const renderProvider = async () => {
+      act(() => {
+        root.render(
+          <FeedProvider>
+            <Probe />
+          </FeedProvider>
+        );
+      });
+      await waitForExpectation(() => expect(latestContext).not.toBeNull());
+    };
+
+    it('logs a station Phase B failure and still clears the switch loading state', async () => {
+      const stationArticles = [createArticle('hash-a1', 'feed-a')];
+      (tagsManager.getFeedsByTag as vi.Mock).mockResolvedValue(['feed-a']);
+      // Eligibility reads the slim catalog; an IPC failure there rejects Phase B.
+      (feedStore.getAll as vi.Mock).mockRejectedValue(new Error('ipc closed'));
+      (articleStore.query as vi.Mock).mockResolvedValue({
+        articles: stationArticles,
+        total: stationArticles.length,
+      });
+
+      await renderProvider();
+      await act(async () => {
+        void latestContext!.selectTag('A');
+      });
+
+      await waitForExpectation(() => {
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Station network refresh phase failed',
+          expect.objectContaining({ sourceKey: 'tag:A' }),
+        );
+        expect(latestContext!.isLoadingArticles).toBe(false);
+        expect(latestContext!.articles.map((article) => article.hash)).toEqual(['hash-a1']);
+      });
+      expect(feedsFetcher.fetchFeedNetworkWithCache).not.toHaveBeenCalled();
+    });
+
+    it('logs a failed smart view query and clears loading onto the empty view', async () => {
+      (articleStore.query as vi.Mock).mockRejectedValue(new Error('database is locked'));
+
+      await renderProvider();
+      await act(async () => {
+        void latestContext!.selectSmartView('unread');
+      });
+
+      await waitForExpectation(() => {
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Smart view query failed',
+          expect.objectContaining({ viewType: 'unread' }),
+        );
+        expect(latestContext!.selectedSmartView).toBe('unread');
+        expect(latestContext!.isLoadingArticles).toBe(false);
+      });
+      expect(latestContext!.articles).toEqual([]);
+    });
+
+    it('re-stashes the header COUNT when the switch total reconcile fails', async () => {
+      const fullPage = Array.from({ length: 100 }, (_, index) => createArticle(`hash-${index}`, 'feed-a'));
+      let countQueries = 0;
+      (tagsManager.getFeedsByTag as vi.Mock).mockResolvedValue(['feed-a']);
+      (feedStore.getAll as vi.Mock).mockResolvedValue([stationFeed('feed-a', { lastFetched: new Date() })]);
+      (articleStore.query as vi.Mock).mockImplementation((query: { includeTotal?: boolean; limit?: number }) => {
+        if (query.includeTotal === true && query.limit === 1) {
+          countQueries += 1;
+          return Promise.reject(new Error('database is locked'));
+        }
+        return Promise.resolve({ articles: fullPage, total: fullPage.length });
+      });
+
+      await renderProvider();
+      await act(async () => {
+        void latestContext!.selectTag('A');
+      });
+
+      await waitForExpectation(() => {
+        expect(latestContext!.articles).toHaveLength(100);
+        expect(latestContext!.isLoadingArticles).toBe(false);
+        expect(logger.warn).toHaveBeenCalledWith(
+          'FeedContext',
+          'Switch header COUNT reconcile failed',
+          expect.objectContaining({ sourceKey: 'tag:A' }),
+        );
+      });
+      expect(latestContext!.articlesTotalKnown).toBe(false);
+      const failedCounts = countQueries;
+
+      // A later idle flush (search exit here) retries the COUNT once.
+      (articleStore.query as vi.Mock).mockImplementation((query: { includeTotal?: boolean; limit?: number }) => {
+        if (query.includeTotal === true && query.limit === 1) {
+          countQueries += 1;
+          return Promise.resolve({ articles: [], total: 240 });
+        }
+        return Promise.resolve({ articles: fullPage, total: fullPage.length });
+      });
+      await act(async () => {
+        latestContext!.syncArticleListViewport({ isSearchActive: true, isAtTop: true, anchorHash: null });
+      });
+      await act(async () => {
+        latestContext!.syncArticleListViewport({ isSearchActive: false, isAtTop: true, anchorHash: null });
+      });
+
+      await waitForExpectation(() => {
+        expect(countQueries).toBe(failedCounts + 1);
+        expect(latestContext!.articlesTotalKnown).toBe(true);
+        expect(latestContext!.articlesTotalCount).toBe(240);
+      });
     });
   });
 });

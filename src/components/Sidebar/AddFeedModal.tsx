@@ -16,6 +16,7 @@ import {
 } from '@/services/feeds/opmlUiWorkflow';
 import { faviconFetcher } from '@/services/favicons/faviconFetcher';
 import { appToastService } from '@/services/ui/appToastService';
+import { logger } from '@/services/logger';
 import { useFeedNavigation } from '@/contexts/FeedContext';
 import './AddFeedModal.css';
 
@@ -197,39 +198,57 @@ export const AddFeedModal: React.FC<AddFeedModalProps> = ({
         },
       );
 
+      // The subscription row now exists. Initial article storage and favicon
+      // persistence are best-effort: failing them must not report "failed to
+      // add" (a retry would only hit "Already subscribed"). Selecting the feed
+      // below refetches, since lastFetched stays unset when storage failed.
       if (feedItems.length > 0) {
-        await storeParsedFeedContent({
-          feedId: addedFeed.id,
-          feedUrl: addedFeed.url,
-          feed: addedFeed,
-          feedTitle: addedFeed.title,
-          rawText: xmlText,
-        });
-
-        const syncedCounts = await articleStore.syncFeedCountsBatch([addedFeed.id]);
-        const counts = syncedCounts[0];
-        await feedsManager.updateFeed(addedFeed.id, {
-          lastFetched: new Date(),
-          etag: fetchResult.etag,
-          lastModifiedHeader: fetchResult.lastModified,
-          articleCount: counts?.articleCount ?? feedItems.length,
-          unreadCount: counts?.unreadCount ?? feedItems.length,
-        });
-
-        if (counts) {
-          feedLibraryMutationBus.publishFeedsCountsUpdated([{
+        try {
+          await storeParsedFeedContent({
             feedId: addedFeed.id,
-            unreadCount: counts.unreadCount,
-            articleCount: counts.articleCount,
-          }]);
+            feedUrl: addedFeed.url,
+            feed: addedFeed,
+            feedTitle: addedFeed.title,
+            rawText: xmlText,
+          });
+
+          const syncedCounts = await articleStore.syncFeedCountsBatch([addedFeed.id]);
+          const counts = syncedCounts[0];
+          await feedsManager.updateFeed(addedFeed.id, {
+            lastFetched: new Date(),
+            etag: fetchResult.etag,
+            lastModifiedHeader: fetchResult.lastModified,
+            articleCount: counts?.articleCount ?? feedItems.length,
+            unreadCount: counts?.unreadCount ?? feedItems.length,
+          });
+
+          if (counts) {
+            feedLibraryMutationBus.publishFeedsCountsUpdated([{
+              feedId: addedFeed.id,
+              unreadCount: counts.unreadCount,
+              articleCount: counts.articleCount,
+            }]);
+          }
+        } catch (storeError) {
+          logger.warn('AddFeedModal', 'Initial article storage failed after adding feed', {
+            feedId: addedFeed.id,
+            error: storeError,
+          });
         }
       }
 
       if (favicon || faviconFetchFailed) {
-        await feedsManager.updateFeed(addedFeed.id, {
-          favicon,
-          faviconFetchFailed,
-        });
+        try {
+          await feedsManager.updateFeed(addedFeed.id, {
+            favicon,
+            faviconFetchFailed,
+          });
+        } catch (faviconError) {
+          logger.warn('AddFeedModal', 'Favicon update failed after adding feed', {
+            feedId: addedFeed.id,
+            error: faviconError,
+          });
+        }
       }
 
       // Reset form and close modal

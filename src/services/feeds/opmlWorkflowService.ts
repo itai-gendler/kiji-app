@@ -3,6 +3,7 @@ import { getAllFeedMetadataCached } from '@/services/feeds/feedMetadataCache';
 import { opmlImportService, type OpmlImportResult, type ParseOpmlEntriesOptions } from '@/services/feeds/opmlImportService';
 import { feedScheduler } from '@/services/scheduler/feedSchedulerService';
 import { helperTaskClient } from '@/services/tasks/helperTaskClient';
+import { logger } from '@/services/logger';
 import {
   HELPER_TASK_KIND,
   type FaviconFetchTaskResult,
@@ -26,6 +27,8 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => {
 
 class OpmlWorkflowService {
   private faviconTaskFeedMap = new Map<string, string>();
+  /** Queued favicon task count per feed id — mirrors `faviconTaskFeedMap` values for O(1) dedupe. */
+  private pendingFaviconTaskCounts = new Map<string, number>();
   private unsubscribeTaskEvents: (() => void) | null = null;
   private backfillScheduled = false;
   private visibleStationFaviconBoosted = new Set<string>();
@@ -52,10 +55,36 @@ class OpmlWorkflowService {
     }
 
     void (async () => {
-      const feeds = await Promise.all(feedIds.map((feedId) => feedsManager.getFeedById(feedId)));
-      this.prioritizeMissingFaviconsForFeeds(
-        feeds.filter((feed): feed is NonNullable<typeof feed> => feed != null),
-      );
+      try {
+        // Pre-filter on the slim cached catalog (one IPC, no favicon blobs)
+        // instead of one full-row feeds_get per station feed on every switch.
+        // Only feeds still missing a favicon are re-read for a fresh check.
+        const stationFeedIds = new Set(feedIds);
+        const catalog = await getAllFeedMetadataCached();
+        const candidateIds = catalog
+          .filter((feed) => (
+            stationFeedIds.has(feed.id)
+            && !feed.emoji
+            && !feed.faviconStored
+            && !feed.faviconFetchFailed
+            && !this.visibleStationFaviconBoosted.has(feed.id)
+            && !this.hasPendingFaviconTask(feed.id)
+          ))
+          .map((feed) => feed.id);
+        if (candidateIds.length === 0) {
+          return;
+        }
+
+        const feeds = await Promise.all(candidateIds.map((feedId) => feedsManager.getFeedById(feedId)));
+        this.prioritizeMissingFaviconsForFeeds(
+          feeds.filter((feed): feed is NonNullable<typeof feed> => feed != null),
+        );
+      } catch (error) {
+        logger.warn('OpmlWorkflow', 'Station favicon catch-up failed', {
+          feedCount: feedIds.length,
+          error,
+        });
+      }
     })();
   }
 
@@ -82,6 +111,7 @@ class OpmlWorkflowService {
   ): Promise<OpmlImportResult> {
     await helperTaskClient.clearTasks();
     this.faviconTaskFeedMap.clear();
+    this.pendingFaviconTaskCounts.clear();
     this.visibleStationFaviconBoosted.clear();
 
     let parsedOpml;
@@ -145,6 +175,7 @@ class OpmlWorkflowService {
     }
 
     this.faviconTaskFeedMap.delete(event.taskId);
+    this.releasePendingFaviconTask(feedId);
     this.visibleStationFaviconBoosted.delete(feedId);
 
     if (event.status !== 'completed') {
@@ -207,13 +238,16 @@ class OpmlWorkflowService {
   }
 
   private hasPendingFaviconTask(feedId: string): boolean {
-    for (const pendingFeedId of this.faviconTaskFeedMap.values()) {
-      if (pendingFeedId === feedId) {
-        return true;
-      }
-    }
+    return this.pendingFaviconTaskCounts.has(feedId);
+  }
 
-    return false;
+  private releasePendingFaviconTask(feedId: string): void {
+    const count = this.pendingFaviconTaskCounts.get(feedId) ?? 0;
+    if (count <= 1) {
+      this.pendingFaviconTaskCounts.delete(feedId);
+      return;
+    }
+    this.pendingFaviconTaskCounts.set(feedId, count - 1);
   }
 
   private async enqueueFaviconTasks(
@@ -238,6 +272,7 @@ class OpmlWorkflowService {
             },
           });
           this.faviconTaskFeedMap.set(task.taskId, feed.id);
+          this.pendingFaviconTaskCounts.set(feed.id, (this.pendingFaviconTaskCounts.get(feed.id) ?? 0) + 1);
           this.rememberVisibleStationFaviconBoost(feed.id);
         } catch {
           this.visibleStationFaviconBoosted.delete(feed.id);
