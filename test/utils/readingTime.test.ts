@@ -18,6 +18,12 @@ describe('estimateReadingMinutes', () => {
     expect(estimateReadingMinutes(`<p>${words}</p>${code}`)).toBe(3);
   });
 
+  it('decodes numeric entities before counting (CJK stored as &#NNNNN;)', () => {
+    const encoded = Array.from('读'.repeat(1500)).map((char) => `&#${char.codePointAt(0)};`).join('');
+    expect(estimateReadingMinutes(`<p>${encoded}</p>`)).toBe(3);
+    expect(estimateReadingMinutes(`<p>${'&#x8BFB;'.repeat(1500)}</p>`)).toBe(3);
+  });
+
   it('counts CJK characters at a per-character rate', () => {
     expect(estimateReadingMinutes(`<p>${'读'.repeat(1500)}</p>`)).toBe(3);
   });

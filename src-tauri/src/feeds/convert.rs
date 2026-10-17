@@ -307,6 +307,10 @@ fn pick_primary_image(item: &NativeFeedItem, base_url: &str) -> Option<String> {
     }
 
     for candidate in candidates {
+        // Never inject an audio/video file as the lead <img> (podcast enclosures, cover clips).
+        if crate::feeds::parse::has_non_image_media_extension(candidate) {
+            continue;
+        }
         if let Some(resolved) = resolve_url(candidate, base_url) {
             return Some(resolved);
         }

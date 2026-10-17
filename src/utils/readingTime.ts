@@ -6,6 +6,11 @@ const CJK_CHARS_PER_MINUTE = 500;
 const CJK_CHAR_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
 const WORD_PATTERN = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
 
+function decodeCodePoint(code: string): string {
+  const value = code[0] === 'x' || code[0] === 'X' ? Number.parseInt(code.slice(1), 16) : Number.parseInt(code, 10);
+  return Number.isInteger(value) && value > 0 && value <= 0x10ffff ? String.fromCodePoint(value) : ' ';
+}
+
 /**
  * Estimated reading time in whole minutes (minimum 1) for article HTML.
  * Returns 0 when the content has no readable text.
@@ -16,7 +21,9 @@ export function estimateReadingMinutes(html: string): number {
   const text = html
     .replace(/<(script|style|pre|code)\b[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&[#a-z0-9]+;/gi, ' ');
+    // Feeds often store CJK text as numeric entities (&#26368;): decode those so they count.
+    .replace(/&#(x[0-9a-f]+|\d+);/gi, (_match, code: string) => decodeCodePoint(code))
+    .replace(/&[a-z][a-z0-9]*;/gi, ' ');
 
   const cjkChars = text.match(CJK_CHAR_PATTERN)?.length ?? 0;
   const words = text.replace(CJK_CHAR_PATTERN, ' ').match(WORD_PATTERN)?.length ?? 0;

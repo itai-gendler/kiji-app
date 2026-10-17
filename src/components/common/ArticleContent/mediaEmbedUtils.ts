@@ -1,6 +1,7 @@
 import type { CheerioAPI } from 'cheerio';
 import { createYouTubePlaceholderElement } from './liteYoutubeActivation';
 import { buildYouTubeLiteParams, extractYouTubeEmbedTarget, resolveYouTubeWatchUrl } from '@/utils/youtubeEmbed';
+import { isAudioMediaUrl, isVideoMediaUrl } from '@/utils/mediaUrl';
 
 const ALLOWED_IFRAME_HOSTS = new Set([
   'www.youtube.com',
@@ -309,5 +310,40 @@ export function unwrapEmbeddedMediaAnchors(container: Element): void {
     }
 
     anchor.replaceWith(embeddedMedia);
+  });
+}
+
+/**
+ * Repair <img> elements whose src is an audio/video file. Older native
+ * ingestion injected a podcast enclosure or cover clip as the lead image
+ * (`figure.article-lead-image`), which can never decode and rendered as a
+ * broken-image placeholder.
+ * - Audio: dropped (with an emptied wrapper). Article view already renders the
+ *   episode player from the audio enclosure.
+ * - Video: replaced by an inline <video controls preload="metadata">.
+ */
+export function repairNonImageMediaImages(container: Element): void {
+  container.querySelectorAll('img[src]').forEach((image) => {
+    const src = image.getAttribute('src');
+    const isAudio = isAudioMediaUrl(src);
+    if (!isAudio && !isVideoMediaUrl(src)) {
+      return;
+    }
+
+    const wrapper = image.parentElement;
+    if (isAudio) {
+      image.remove();
+    } else {
+      const video = image.ownerDocument.createElement('video');
+      video.setAttribute('src', src ?? '');
+      video.setAttribute('controls', '');
+      video.setAttribute('preload', 'metadata');
+      video.setAttribute('playsinline', '');
+      image.replaceWith(video);
+    }
+
+    if (wrapper && wrapper !== container && !wrapper.firstElementChild && !wrapper.textContent?.trim()) {
+      wrapper.remove();
+    }
   });
 }

@@ -5,6 +5,7 @@ import { htmlToPlainText } from "../../utils/htmlToPlainText";
 import { articleHasher } from "./articleHasher";
 import { normalizeEnclosures } from "./normalizeEnclosures";
 import { normalizePublishedDate } from "./publishedDateNormalizer";
+import { isUsableImageUrl } from '@/utils/mediaUrl';
 
 export interface ConvertOptions {
   feedId: string;
@@ -115,6 +116,7 @@ function generateDescription(content: string): string {
 function pickPrimaryImage(item: FeedItem, baseUrl?: string): string | undefined {
   const candidates = [item.thumbnail?.url, ...(item.images ?? []), item.previewImage];
   for (const candidate of candidates) {
+    if (!isUsableImageUrl(candidate)) continue;
     const resolved = resolveUrl(candidate, baseUrl);
     if (resolved) {
       return resolved;

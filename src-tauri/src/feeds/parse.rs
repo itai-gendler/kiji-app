@@ -221,10 +221,41 @@ fn entry_images(entry: &Entry) -> Vec<String> {
     images
 }
 
+/// Audio/video file extensions that must never be used as an image source.
+const NON_IMAGE_MEDIA_EXTENSIONS: &[&str] = &[
+    "mp3", "m4a", "aac", "ogg", "oga", "opus", "wav", "flac", "mp4", "m4v", "mov", "webm", "mkv",
+    "avi", "m3u8", "mpd",
+];
+
+/// True when a URL's path ends in an audio/video file extension.
+pub(crate) fn has_non_image_media_extension(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let Some((_, extension)) = path.rsplit_once('.') else {
+        return false;
+    };
+    if extension.contains('/') {
+        return false;
+    }
+    NON_IMAGE_MEDIA_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+}
+
+/// `media:content` (and enclosures feed-rs maps into it) can be audio or video.
+/// Only declared `image/*` content, or untyped content whose URL is not an
+/// audio/video file, may be used as an article image.
+fn is_image_media_content(content_type: Option<&str>, url: &str) -> bool {
+    match content_type {
+        Some(mime) => mime.trim().to_ascii_lowercase().starts_with("image/"),
+        None => !has_non_image_media_extension(url),
+    }
+}
+
 fn collect_media_images(media: &MediaObject, images: &mut Vec<String>) {
     for item in &media.content {
         if let Some(url) = item.url.as_ref() {
-            images.push(url.to_string());
+            let content_type = item.content_type.as_ref().map(|value| value.to_string());
+            if is_image_media_content(content_type.as_deref(), url.as_str()) {
+                images.push(url.to_string());
+            }
         }
     }
     for thumbnail in &media.thumbnails {
@@ -393,6 +424,56 @@ mod tests {
         assert!(preview.items[0].link.as_deref().unwrap_or("").contains("/p/"));
         assert!(!preview.items[0].title.is_empty());
         assert_eq!(preview.items[0].feed_id, "https://caminodetexas.substack.com/feed");
+    }
+
+    #[test]
+    fn podcast_audio_enclosure_is_not_an_image() {
+        let Some(raw) = read_fixture("caminodetexas.xml") else {
+            return;
+        };
+        let preview = parse_feed_preview(raw, "https://caminodetexas.substack.com/feed".to_string())
+            .expect("preview parse");
+
+        for item in &preview.items {
+            let image_urls = item
+                .images
+                .iter()
+                .flatten()
+                .chain(item.preview_image.iter())
+                .chain(item.thumbnail.iter().map(|value| &value.url));
+            for url in image_urls {
+                assert!(!has_non_image_media_extension(url), "audio used as image: {url}");
+            }
+        }
+        assert!(preview.items.iter().any(|item| {
+            item.enclosures.as_ref().is_some_and(|enclosures| {
+                enclosures.iter().any(|enclosure| enclosure.url.contains(".mp3"))
+            })
+        }));
+    }
+
+    #[test]
+    fn video_media_content_is_not_an_image_but_its_thumbnail_is() {
+        let raw = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>t</title><link>https://example.com</link>
+<item><title>Clip</title><link>https://example.com/a</link><guid>a</guid>
+<media:content url="https://cdn.example.com/lead.mp4" type="video/mp4" medium="video"><media:thumbnail url="https://cdn.example.com/poster.jpg"/></media:content>
+</item></channel></rss>"#;
+        let preview = parse_feed_preview(raw.to_string(), "https://example.com/feed".to_string())
+            .expect("preview parse");
+        let item = &preview.items[0];
+
+        assert_eq!(item.preview_image.as_deref(), Some("https://cdn.example.com/poster.jpg"));
+        assert!(item.images.iter().flatten().all(|url| !url.ends_with(".mp4")));
+    }
+
+    #[test]
+    fn classifies_media_urls_by_type_then_extension() {
+        assert!(is_image_media_content(Some("image/jpeg"), "https://x/a"));
+        assert!(!is_image_media_content(Some("audio/mpeg"), "https://x/a.jpg"));
+        assert!(!is_image_media_content(None, "https://x/ep.MP3?dest-id=1"));
+        assert!(is_image_media_content(None, "https://x/img?w=800"));
+        assert!(!has_non_image_media_extension("https://x.mp3/image"));
     }
 
     #[test]

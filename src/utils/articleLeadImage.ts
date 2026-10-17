@@ -1,3 +1,5 @@
+import { isUsableImageUrl } from './mediaUrl';
+
 function hasInlineImage(html: string): boolean {
   if (!html) return false;
 
@@ -14,7 +16,7 @@ function escapeAttribute(value: string): string {
 }
 
 export function injectLeadImage(content: string, imageUrl: string | undefined): string {
-  if (!imageUrl || hasInlineImage(content)) {
+  if (!isUsableImageUrl(imageUrl) || hasInlineImage(content)) {
     return content;
   }
 

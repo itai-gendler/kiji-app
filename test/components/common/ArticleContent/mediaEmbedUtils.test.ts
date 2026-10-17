@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   convertYouTubeIframesInContainer,
+  repairNonImageMediaImages,
   promoteYouTubeMediaAnchors,
 } from '@/components/common/ArticleContent/mediaEmbedUtils';
 import { preprocessArticleViewHtml } from '@/services/articles/articleViewPreprocessTask';
@@ -151,5 +152,31 @@ describe('preprocessArticleViewHtml YouTube media anchors', () => {
     const doc = parseHtml(result.html);
 
     expect(doc.querySelector('iframe')).toBeNull();
+  });
+});
+
+describe('repairNonImageMediaImages', () => {
+  it('drops an audio lead image with its emptied figure', () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<figure class="article-lead-image"><img src="https://api.substack.com/feed/podcast/1/ep.mp3" alt=""></figure><p>Body</p>';
+    repairNonImageMediaImages(container);
+    expect(container.innerHTML).toBe('<p>Body</p>');
+  });
+
+  it('turns a video lead image into an inline video player', () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<figure class="article-lead-image"><img src="https://media.wired.com/clips/a/Lead.mp4" alt=""></figure>';
+    repairNonImageMediaImages(container);
+    const video = container.querySelector('figure > video');
+    expect(video?.getAttribute('src')).toBe('https://media.wired.com/clips/a/Lead.mp4');
+    expect(video?.hasAttribute('controls')).toBe(true);
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('leaves real images alone', () => {
+    const container = document.createElement('div');
+    container.innerHTML = '<p><img src="https://x.com/a.jpg"></p>';
+    repairNonImageMediaImages(container);
+    expect(container.querySelector('img')).not.toBeNull();
   });
 });

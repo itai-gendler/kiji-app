@@ -1,4 +1,4 @@
-import { buildYouTubeLiteParams, extractYouTubeEmbedTarget, type YouTubeEmbedTarget } from '@/utils/youtubeEmbed';
+import { buildYouTubeLiteParams, buildYouTubeWatchUrl, extractYouTubeEmbedTarget, type YouTubeEmbedTarget } from '@/utils/youtubeEmbed';
 
 const EMBEDDED_MEDIA_SELECTOR = 'lite-youtube, iframe, video, audio, feed-audio-player, embed, object';
 const YOUTUBE_INLINE_EMBED_PAGE = '/youtube-embed.html';
@@ -26,6 +26,24 @@ export function resolveArticleContentClick(target: HTMLElement): ArticleContentC
   }
 
   return { type: 'link', href: link.href, link };
+}
+
+/**
+ * youtube.com/watch URL for a lite-youtube placeholder (honours `params` start).
+ * Inline playback is not used: KiJi's tauri:// pages send no HTTP Referer, so
+ * YouTube's embedded player refuses with Error 153. Videos open on YouTube.
+ */
+export function resolveLiteYoutubeWatchUrl(element: HTMLElement): string | null {
+  const videoId = element.getAttribute('videoid')?.trim();
+  if (!videoId || !YOUTUBE_VIDEO_ID_PATTERN.test(videoId)) {
+    return null;
+  }
+  const startRaw = new URLSearchParams(element.getAttribute('params') || '').get('start');
+  const startSeconds = startRaw ? Number(startRaw) : undefined;
+  return buildYouTubeWatchUrl({
+    videoId,
+    startSeconds: Number.isFinite(startSeconds) ? startSeconds : undefined,
+  });
 }
 
 function youtubePosterUrl(videoId: string): string {
@@ -71,9 +89,15 @@ export function decorateYouTubePlaceholder(element: HTMLElement): void {
 
   const label = document.createElement('span');
   label.className = 'lyt-visually-hidden';
-  label.textContent = element.getAttribute('playlabel') || 'Play YouTube video';
+  label.textContent = element.getAttribute('playlabel') || 'Watch on YouTube';
   button.appendChild(label);
   element.appendChild(button);
+
+  const hint = document.createElement('span');
+  hint.className = 'lyt-external-hint';
+  hint.setAttribute('aria-hidden', 'true');
+  hint.textContent = 'Watch on YouTube ↗';
+  element.appendChild(hint);
 }
 
 export function createYouTubePlaceholderElement(options: {
@@ -83,7 +107,7 @@ export function createYouTubePlaceholderElement(options: {
 }): HTMLElement {
   const element = document.createElement('lite-youtube');
   element.setAttribute('videoid', options.videoId);
-  element.setAttribute('playlabel', 'Play YouTube video');
+  element.setAttribute('playlabel', 'Watch on YouTube');
 
   const title = options.title?.trim() || 'YouTube video';
   element.setAttribute('title', title);

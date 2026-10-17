@@ -26,13 +26,12 @@ import prismLightTheme from 'prismjs/themes/prism.css?raw';
 import prismDarkTheme from 'prismjs/themes/prism-tomorrow.css?raw';
 import liteYouTubeStyles from 'lite-youtube-embed/src/lite-yt-embed.css?raw';
 import brokenImagePlaceholderSvg from '@/assets/icons/hide_image.svg?raw';
-import { unwrapEmbeddedMediaAnchors, convertYouTubeIframesInContainer } from './mediaEmbedUtils';
+import { unwrapEmbeddedMediaAnchors, convertYouTubeIframesInContainer, repairNonImageMediaImages } from './mediaEmbedUtils';
 import { classifyStandaloneMedia, collectLightboxImages, handleStandaloneMediaLoad } from './standaloneMediaLayout';
 import {
-  activateLiteYoutubeInPlace,
-  createYouTubePlaceholderElement,
   finalizeYouTubePlaceholders,
   resolveArticleContentClick,
+  resolveLiteYoutubeWatchUrl,
 } from './liteYoutubeActivation';
 import '../AudioPlayer/FeedAudioPlayerElement';
 
@@ -400,6 +399,26 @@ class ArticleContentElement extends HTMLElement {
         padding-bottom: 56.25%;
       }
 
+      .article-content-container lite-youtube {
+        cursor: pointer;
+      }
+
+      .article-content-container lite-youtube .lyt-external-hint {
+        position: absolute;
+        right: 12px;
+        bottom: 12px;
+        z-index: 2;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.4;
+        color: #fff;
+        background-color: rgba(0, 0, 0, 0.6);
+        pointer-events: none;
+      }
+
       .article-content-container lite-youtube > iframe {
         margin: 0;
         width: 100%;
@@ -615,6 +634,7 @@ class ArticleContentElement extends HTMLElement {
       container.innerHTML = html;
       this.lastContent = html;
       wrapNonAsciiTextNodes(container);
+      repairNonImageMediaImages(container);
 
       classifyStandaloneMedia(container, container.clientWidth);
 
@@ -1078,26 +1098,23 @@ class ArticleContentElement extends HTMLElement {
 
     const clickResult = resolveArticleContentClick(target);
 
+    // YouTube opens on youtube.com instead of playing inline: tauri:// pages send no
+    // HTTP Referer, so the embedded player fails with Error 153 (see resolveLiteYoutubeWatchUrl).
     if (clickResult.type === 'embedded-media') {
       event.preventDefault();
       event.stopPropagation();
 
       const liteYoutube = target.closest('lite-youtube') as HTMLElement | null;
-      if (liteYoutube) {
-        activateLiteYoutubeInPlace(liteYoutube);
+      const watchUrl = liteYoutube ? resolveLiteYoutubeWatchUrl(liteYoutube) : null;
+      if (watchUrl) {
+        this.dispatchLinkClick(watchUrl);
       }
       return;
     }
 
     if (clickResult.type === 'youtube-anchor') {
       event.preventDefault();
-      const placeholder = createYouTubePlaceholderElement({
-        videoId: clickResult.target.videoId,
-        title: clickResult.link.getAttribute('title') || clickResult.link.textContent?.trim() || null,
-        startSeconds: clickResult.target.startSeconds,
-      });
-      clickResult.link.replaceWith(placeholder);
-      activateLiteYoutubeInPlace(placeholder);
+      this.dispatchLinkClick(clickResult.link.href);
       return;
     }
 
@@ -1106,9 +1123,12 @@ class ArticleContentElement extends HTMLElement {
     }
 
     event.preventDefault();
+    this.dispatchLinkClick(clickResult.href);
+  }
 
+  private dispatchLinkClick(href: string): void {
     this.dispatchEvent(new CustomEvent('article-link-click', {
-      detail: { href: clickResult.href },
+      detail: { href },
       bubbles: true,
       composed: true,
     }));

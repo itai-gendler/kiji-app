@@ -5,6 +5,7 @@ import StarIcon from '@mui/icons-material/Star';
 import type { Article } from '@/types/article';
 import { renderHighlightedTextWithNonAsciiFont } from '@/utils/nonAsciiTypography';
 import { getArticleListRowSignature } from './articleListRowSignature';
+import { isUsableImageUrl } from '@/utils/mediaUrl';
 
 const isBase64DataUrl = (str: string): boolean => str.startsWith('data:');
 
@@ -79,7 +80,8 @@ export const ArticleListItem = memo<ArticleListItemProps>(
         ? 'is-read'
         : 'is-unread';
 
-    const previewImageUrl = article.previewImage;
+    // Stored rows may still carry a podcast/video file as previewImage; never load it as an <img>.
+    const previewImageUrl = isUsableImageUrl(article.previewImage) ? article.previewImage : undefined;
     const [imageError, setImageError] = useState(false);
     const [previewLoaded, setPreviewLoaded] = useState(false);
 

@@ -8,6 +8,7 @@ import {
   buildYouTubeInlineEmbedPageUrl,
   createYouTubePlaceholderElement,
   resolveArticleContentClick,
+  resolveLiteYoutubeWatchUrl,
 } from '@/components/common/ArticleContent/liteYoutubeActivation';
 import { convertYouTubeIframesInContainer, unwrapEmbeddedMediaAnchors } from '@/components/common/ArticleContent/mediaEmbedUtils';
 import {
@@ -235,5 +236,24 @@ describe('youtube-embed shell page', () => {
     expect(html).toContain('youtube-nocookie.com/embed/');
     expect(html).toContain("params.get('v')");
     expect(html).toContain('referrerPolicy');
+  });
+});
+
+describe('resolveLiteYoutubeWatchUrl (open on YouTube instead of inline Error 153)', () => {
+  it('builds a watch URL from the placeholder video id and start offset', () => {
+    const placeholder = createYouTubePlaceholderElement({ videoId: 'DMXhFuP_wmU', startSeconds: 42 });
+    expect(resolveLiteYoutubeWatchUrl(placeholder)).toBe('https://www.youtube.com/watch?v=DMXhFuP_wmU&t=42');
+  });
+
+  it('labels the placeholder as an external YouTube link', () => {
+    const placeholder = createYouTubePlaceholderElement({ videoId: 'DMXhFuP_wmU' });
+    expect(placeholder.getAttribute('playlabel')).toBe('Watch on YouTube');
+    expect(placeholder.querySelector('.lyt-external-hint')?.textContent).toContain('YouTube');
+  });
+
+  it('returns null for placeholders without a valid video id', () => {
+    const element = document.createElement('lite-youtube');
+    element.setAttribute('videoid', 'bad id!');
+    expect(resolveLiteYoutubeWatchUrl(element)).toBeNull();
   });
 });

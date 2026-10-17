@@ -10,6 +10,7 @@ import {
   logFeedNetworkAttribution,
   type FeedParseAttribution,
 } from "@/services/diagnostics/webKitAttribution";
+import { isUsableImageUrl } from '@/utils/mediaUrl';
 
 export type { Author, Enclosure, MediaThumbnail };
 
@@ -484,9 +485,16 @@ function cleanLink(link: string, baseUrl: string): string | undefined {
 }
 
 function extractImage(item: Element, feedUrl: string): string | undefined {
-  const candidate = item.querySelector("media\\:thumbnail, media\\:content, itunes\\:image, enclosure, image");
-  const raw = candidate?.getAttribute("url") ?? candidate?.getAttribute("href") ?? candidate?.textContent ?? "";
-  return cleanLink(raw, feedUrl);
+  // Skip audio/video media:content and enclosures (podcast audio, cover clips).
+  const candidates = item.querySelectorAll("media\\:thumbnail, media\\:content, itunes\\:image, enclosure, image");
+  for (const candidate of Array.from(candidates)) {
+    const type = candidate.getAttribute("type") ?? "";
+    if (type && !type.toLowerCase().startsWith("image/")) continue;
+    const raw = candidate.getAttribute("url") ?? candidate.getAttribute("href") ?? candidate.textContent ?? "";
+    const link = cleanLink(raw, feedUrl);
+    if (isUsableImageUrl(link)) return link;
+  }
+  return undefined;
 }
 
 function extractEnclosures(item: Element, feedUrl: string, duration?: number): Enclosure[] | undefined {

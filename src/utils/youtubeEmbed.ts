@@ -133,5 +133,5 @@ export function buildYouTubeEmbedHtml(url: string, title?: string): string | nul
   const safeTitle = (title || 'YouTube video').replace(/"/g, '&quot;');
   const params = buildYouTubeLiteParams(target.startSeconds);
 
-  return `<lite-youtube videoid="${target.videoId}" playlabel="Play YouTube video" title="${safeTitle}" aria-label="${safeTitle}"${params ? ` params="${params}"` : ''}></lite-youtube>`;
+  return `<lite-youtube videoid="${target.videoId}" playlabel="Watch on YouTube" title="${safeTitle}" aria-label="${safeTitle}"${params ? ` params="${params}"` : ''}></lite-youtube>`;
 }
