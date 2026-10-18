@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractReleaseNotes, extractTranslations, readChangelog, toManifestNotes } from "./release-notes.mjs";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PRODUCT_NAME = "KiJi";
@@ -196,12 +197,25 @@ if (downloadOptions.length === 0) {
   process.exit(1);
 }
 
+// Confirmed user-facing notes from CHANGELOG.md (see kiji-doc release-notes rule).
+const releaseNotes = extractReleaseNotes(readChangelog(ROOT_DIR), version);
+if (!releaseNotes) {
+  console.error(`CHANGELOG.md has no "## [${version}]" section; add confirmed release notes before publishing.`);
+  process.exit(1);
+}
+const { translations: releaseTranslations, missing: missingTranslations } = extractTranslations(version, ROOT_DIR);
+if (missingTranslations.length) {
+  console.warn(`No ${missingTranslations.join(", ")} release notes for ${version}; the website shows English for those locales.`);
+}
+
 const manifest = {
   productName: PRODUCT_NAME,
   version,
   tag: release.tagName,
   date: release.publishedAt ?? new Date().toISOString(),
-  notesUrl: `https://github.com/${REPO}/releases/tag/${release.tagName}`,
+  // The website changelog renders the same notes; GitHub stays the checksum/asset page.
+  notesUrl: `${WEBSITE_URL}/changelog/#${release.tagName}`,
+  notes: toManifestNotes(releaseNotes, releaseTranslations),
   updatesFeedUrl: `${WEBSITE_URL}/feed.xml`,
   checksumsUrl: `https://github.com/${REPO}/releases/tag/${release.tagName}`,
   downloadOptions,

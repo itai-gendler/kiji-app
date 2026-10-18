@@ -10,6 +10,7 @@ import { tauriClient } from '@/lib/tauriClient';
 import type {
   ReleaseDownloadOption,
   ReleaseManifest,
+  ReleaseNotesSection,
   UpdateAvailability,
   UpdateCheckResult,
   UpdateWindowPayload,
@@ -17,6 +18,11 @@ import type {
 
 const MANIFEST_FETCH_TIMEOUT_MS = 3_000;
 const SUMMARY_MAX_LENGTH = 200;
+// release.json is remote input: keep what the window renders bounded.
+const NOTES_MAX_SECTIONS = 8;
+const NOTES_MAX_ITEMS_PER_SECTION = 30;
+const NOTES_TITLE_MAX_LENGTH = 40;
+const NOTES_ITEM_MAX_LENGTH = 600;
 
 const DOWNLOAD_ORDER = [
   'mac-arm64',
@@ -164,7 +170,42 @@ async function fetchReleaseManifest(): Promise<ReleaseManifest> {
   return manifestFetchPromise;
 }
 
-function buildSummary(manifest: ReleaseManifest): string {
+function clampText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength ? trimmed : `${trimmed.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+export function normalizeReleaseNoteSections(notes: unknown): ReleaseNotesSection[] {
+  const rawSections = (notes as { sections?: unknown } | null | undefined)?.sections;
+  if (!Array.isArray(rawSections)) {
+    return [];
+  }
+  const sections: ReleaseNotesSection[] = [];
+  for (const raw of rawSections.slice(0, NOTES_MAX_SECTIONS)) {
+    const title = (raw as { title?: unknown })?.title;
+    const items = (raw as { items?: unknown })?.items;
+    if (typeof title !== 'string' || !title.trim() || !Array.isArray(items)) {
+      continue;
+    }
+    const cleanItems = items
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .slice(0, NOTES_MAX_ITEMS_PER_SECTION)
+      .map((item) => clampText(item, NOTES_ITEM_MAX_LENGTH));
+    if (cleanItems.length > 0) {
+      sections.push({ title: clampText(title, NOTES_TITLE_MAX_LENGTH), items: cleanItems });
+    }
+  }
+  return sections;
+}
+
+function buildSummary(manifest: ReleaseManifest, hasSections: boolean): string {
+  const summary = manifest.notes?.summary;
+  if (typeof summary === 'string' && summary.trim()) {
+    return truncateSummary(summary);
+  }
+  if (hasSections) {
+    return '';
+  }
   if (manifest.notesUrl) {
     return truncateSummary(`See release notes on ${APP_WEBSITE_URL}.`);
   }
@@ -209,13 +250,15 @@ export async function checkForUpdateDetailed(): Promise<UpdateCheckResult> {
       return { status: 'up-to-date', currentVersion };
     }
 
+    const sections = normalizeReleaseNoteSections(manifest.notes);
     return {
       status: 'available',
       availability: {
         currentVersion,
         latestVersion: manifest.version,
         releasedAt: manifest.date,
-        summary: buildSummary(manifest),
+        summary: buildSummary(manifest, sections.length > 0),
+        sections,
         downloadUrl: resolveDownloadUrl(manifest),
         notesUrl: resolveNotesUrl(manifest),
       },

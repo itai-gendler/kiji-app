@@ -15,9 +15,10 @@ use crate::scheduler::types::{
     SCHEDULER_NATIVE_CYCLE_START_EVENT,
 };
 use crate::scheduler::webview_delivery::emit_scheduler_payload_to_main_webview;
-use futures_util::future::join_all;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use once_cell::sync::Lazy;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
 use std::sync::Mutex;
 use tauri::AppHandle;
 
@@ -181,41 +182,46 @@ pub async fn preview_native_refresh_cycle(
             .into_iter()
             .collect();
 
-        for chunk in prioritized.chunks(concurrency) {
-            if let Some(ref id) = cycle_id {
-                if is_cycle_cancelled(id) {
-                    cancelled = true;
-                    break;
+        let force_refresh_feed_ids = &force_refresh_feed_ids;
+        let cycle_id_ref = &cycle_id;
+        // Sliding window: a slow or timing-out feed holds one slot only, and
+        // each feed reports its FEED event as soon as it settles (the old
+        // lock-step chunks waited for the slowest feed of every chunk).
+        cancelled = drive_feed_window(
+            &prioritized,
+            concurrency,
+            || {
+                cycle_id_ref
+                    .as_ref()
+                    .is_some_and(|id| is_cycle_cancelled(id))
+            },
+            move |batch| {
+                let batch_ids: Vec<String> = batch
+                    .iter()
+                    .map(|entry| entry.entry.feed_id.clone())
+                    .collect();
+                async move {
+                    let feeds_by_id = db
+                        .read(move |connection| get_feeds_by_ids(connection, &batch_ids))
+                        .await?;
+                    // Feeds deleted between planning and execution are skipped
+                    // so one missing row cannot abort the rest of the cycle.
+                    Ok(resolve_chunk_feeds(batch, &feeds_by_id))
                 }
-            }
-
-            let chunk_ids: Vec<String> = chunk
-                .iter()
-                .map(|entry| entry.entry.feed_id.clone())
-                .collect();
-            let feeds_by_id = db
-                .read(move |connection| get_feeds_by_ids(connection, &chunk_ids))
-                .await?;
-
-            // Feeds deleted between planning and execution are skipped so one
-            // missing row cannot abort the rest of the cycle.
-            let chunk_feeds = resolve_chunk_feeds(chunk, &feeds_by_id);
-            let chunk_tasks = chunk_feeds.iter().map(|(_, feed)| {
-                let feed = feed.clone();
+            },
+            move |_entry, feed: FeedRecord| {
                 let force_refresh = force_refresh_feed_ids.contains(&feed.id);
-                let request_id = cycle_id
+                let request_id = cycle_id_ref
                     .as_ref()
                     .map(|cid| format!("{}:{}", cid, feed.id));
-                if let Some(cid) = cycle_id.as_ref() {
+                if let Some(cid) = cycle_id_ref.as_ref() {
                     if let Some(rid) = request_id.clone() {
                         register_request_id(cid, rid);
                     }
                 }
                 refresh_single_feed_native(db, feed, force_refresh, request_id)
-            });
-
-            let chunk_results = join_all(chunk_tasks).await;
-            for ((entry, _), result) in chunk_feeds.iter().zip(chunk_results) {
+            },
+            |entry, result: Result<NativeFeedRefreshOutcome, String>| {
                 let request_id = cycle_id
                     .as_ref()
                     .map(|cid| format!("{}:{}", cid, entry.entry.feed_id));
@@ -258,8 +264,9 @@ pub async fn preview_native_refresh_cycle(
                     "Scheduler",
                 );
                 feed_results.push(feed_result);
-            }
-        }
+            },
+        )
+        .await?;
 
         if !cancelled {
             if let Some(ref id) = cycle_id {
@@ -295,6 +302,70 @@ pub async fn preview_native_refresh_cycle(
         cancelled: Some(cancelled),
         cycle_id,
     })
+}
+
+/// Runs `run` for every planned entry with at most `concurrency` feeds in
+/// flight, starting the next feed as soon as any slot frees up. Feed rows are
+/// looked up in batches of `concurrency` only when the window needs them (one
+/// read per batch, rows still fresh at start time). `is_cancelled` is checked
+/// before every lookup and feed start; `on_settled` runs as each feed
+/// finishes. A lookup error stops new work, drains the in-flight feeds (so
+/// their request registrations clean up), then returns the error. In-flight
+/// feeds are not polled during a batch lookup; that read is one indexed query.
+/// Returns `true` when cancellation stopped the window before every feed ran.
+async fn drive_feed_window<'a, E, F, R, LookupFut, RunFut>(
+    entries: &'a [E],
+    concurrency: usize,
+    is_cancelled: impl Fn() -> bool,
+    mut lookup: impl FnMut(&'a [E]) -> LookupFut,
+    mut run: impl FnMut(&'a E, F) -> RunFut,
+    mut on_settled: impl FnMut(&'a E, R),
+) -> Result<bool, String>
+where
+    LookupFut: Future<Output = Result<Vec<(&'a E, F)>, String>>,
+    RunFut: Future<Output = R>,
+{
+    let concurrency = concurrency.max(1);
+    let mut next_batch_start = 0usize;
+    let mut ready: VecDeque<(&'a E, F)> = VecDeque::new();
+    let mut in_flight = FuturesUnordered::new();
+    let mut cancelled = false;
+    let mut lookup_error: Option<String> = None;
+
+    loop {
+        while lookup_error.is_none() && !cancelled && in_flight.len() < concurrency {
+            if ready.is_empty() && next_batch_start >= entries.len() {
+                break;
+            }
+            if is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            if let Some((entry, feed)) = ready.pop_front() {
+                let task = run(entry, feed);
+                in_flight.push(async move { (entry, task.await) });
+                continue;
+            }
+
+            let batch_end = (next_batch_start + concurrency).min(entries.len());
+            let batch = &entries[next_batch_start..batch_end];
+            next_batch_start = batch_end;
+            match lookup(batch).await {
+                Ok(resolved) => ready.extend(resolved),
+                Err(error) => lookup_error = Some(error),
+            }
+        }
+
+        match in_flight.next().await {
+            Some((entry, result)) => on_settled(entry, result),
+            None => break,
+        }
+    }
+
+    match lookup_error {
+        Some(error) => Err(error),
+        None => Ok(cancelled),
+    }
 }
 
 struct NativeFeedRefreshOutcome {
@@ -711,5 +782,204 @@ mod tests {
             after >= before + 2,
             "two missing feeds must add 2 to ChunkFeedsSkippedMissing"
         );
+    }
+
+    // --- drive_feed_window ---------------------------------------------------
+
+    use std::cell::{Cell, RefCell};
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    async fn resolve_all<'a>(batch: &'a [&'static str]) -> Result<Vec<(&'a &'static str, ())>, String> {
+        Ok(batch.iter().map(|id| (id, ())).collect())
+    }
+
+    #[tokio::test]
+    async fn window_starts_next_feed_while_a_slow_feed_is_still_running() {
+        // concurrency 2: "slow" only finishes after "d" settled. Lock-step
+        // chunks would wait on "slow" before starting "c"/"d" and never finish.
+        let ids = ["slow", "b", "c", "d"];
+        let release_slow = Arc::new(Notify::new());
+        let settled = RefCell::new(Vec::new());
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            drive_feed_window(
+                &ids,
+                2,
+                || false,
+                resolve_all,
+                |id, ()| {
+                    let release_slow = Arc::clone(&release_slow);
+                    let id = *id;
+                    async move {
+                        if id == "slow" {
+                            release_slow.notified().await;
+                        } else {
+                            tokio::task::yield_now().await;
+                        }
+                        id
+                    }
+                },
+                |_, id| {
+                    settled.borrow_mut().push(id);
+                    if id == "d" {
+                        release_slow.notify_one();
+                    }
+                },
+            ),
+        )
+        .await
+        .expect("sliding window must not wait for the slowest feed");
+
+        assert_eq!(outcome, Ok(false));
+        assert_eq!(*settled.borrow(), vec!["b", "c", "d", "slow"]);
+    }
+
+    #[tokio::test]
+    async fn window_never_exceeds_concurrency() {
+        let ids: Vec<&'static str> = vec!["a", "b", "c", "d", "e", "f", "g"];
+        let running = Cell::new(0usize);
+        let max_running = Cell::new(0usize);
+        let settled = Cell::new(0usize);
+
+        let outcome = drive_feed_window(
+            &ids,
+            3,
+            || false,
+            resolve_all,
+            |_, ()| {
+                running.set(running.get() + 1);
+                max_running.set(max_running.get().max(running.get()));
+                async {
+                    tokio::task::yield_now().await;
+                }
+            },
+            |_, ()| {
+                running.set(running.get() - 1);
+                settled.set(settled.get() + 1);
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(false));
+        assert_eq!(settled.get(), ids.len());
+        assert_eq!(max_running.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn window_stops_starting_feeds_after_cancel_and_drains_in_flight() {
+        let ids = ["a", "b", "c", "d", "e"];
+        let cancelled = Cell::new(false);
+        let started = RefCell::new(Vec::new());
+        let settled = RefCell::new(Vec::new());
+
+        let outcome = drive_feed_window(
+            &ids,
+            2,
+            || cancelled.get(),
+            resolve_all,
+            |id, ()| {
+                started.borrow_mut().push(*id);
+                let id = *id;
+                async move {
+                    tokio::task::yield_now().await;
+                    id
+                }
+            },
+            |_, id| {
+                settled.borrow_mut().push(id);
+                cancelled.set(true);
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(true));
+        assert_eq!(*started.borrow(), vec!["a", "b"]);
+        assert_eq!(settled.borrow().len(), 2, "in-flight feeds still settle after cancel");
+    }
+
+    #[tokio::test]
+    async fn window_looks_up_rows_in_concurrency_sized_batches_and_skips_missing() {
+        let ids = ["a", "gone", "c", "d", "e"];
+        let lookups = RefCell::new(Vec::new());
+        let ran = RefCell::new(Vec::new());
+
+        let outcome = drive_feed_window(
+            &ids,
+            2,
+            || false,
+            |batch: &[&'static str]| {
+                lookups.borrow_mut().push(batch.len());
+                let resolved: Vec<_> = batch
+                    .iter()
+                    .filter(|id| **id != "gone")
+                    .map(|id| (id, ()))
+                    .collect();
+                async move { Ok(resolved) }
+            },
+            |id, ()| {
+                ran.borrow_mut().push(*id);
+                async {}
+            },
+            |_, ()| {},
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(false));
+        assert_eq!(*lookups.borrow(), vec![2, 2, 1]);
+        assert_eq!(*ran.borrow(), vec!["a", "c", "d", "e"]);
+    }
+
+    #[tokio::test]
+    async fn window_lookup_error_drains_in_flight_then_returns_error() {
+        let ids = ["a", "b", "c", "d"];
+        let lookup_calls = Cell::new(0usize);
+        let settled = RefCell::new(Vec::new());
+
+        let outcome = drive_feed_window(
+            &ids,
+            2,
+            || false,
+            |batch: &[&'static str]| {
+                lookup_calls.set(lookup_calls.get() + 1);
+                let result = if lookup_calls.get() == 1 {
+                    Ok(batch.iter().map(|id| (id, ())).collect())
+                } else {
+                    Err("db read failed".to_string())
+                };
+                async move { result }
+            },
+            |id, ()| {
+                let id = *id;
+                async move {
+                    tokio::task::yield_now().await;
+                    id
+                }
+            },
+            |_, id| settled.borrow_mut().push(id),
+        )
+        .await;
+
+        assert_eq!(outcome, Err("db read failed".to_string()));
+        let mut settled = settled.into_inner();
+        settled.sort_unstable();
+        assert_eq!(settled, vec!["a", "b"]);
+        assert_eq!(lookup_calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn window_with_no_entries_does_nothing() {
+        let ids: [&'static str; 0] = [];
+        let outcome = drive_feed_window(
+            &ids,
+            4,
+            || false,
+            resolve_all,
+            |_, ()| async {},
+            |_, ()| panic!("no feed should settle"),
+        )
+        .await;
+        assert_eq!(outcome, Ok(false));
     }
 }

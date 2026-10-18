@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- The About and update window lists what's new in an update, grouped into New, Improved and Fixed, so you can read the notes before downloading. It has a cleaner layout, uses your reader theme's accent color, and its buttons match your system's style.
+
 ### Fixed
 
 - A feed that fails to refresh while you open its station no longer waits twice as long before KiJi tries it again.
@@ -31,82 +35,74 @@
 
 ### Changed
 
-- New app icon: **Ripple**, waves spreading from the corner. Settings → App icon offers Ripple, Ripple Dark, Light and Dark. If you had picked Sunset, Cosmos, Particle or Wave, the app now shows Ripple.
+- New app icon, Ripple: waves spreading out from a corner. Choose Ripple, Ripple Dark, Light or Dark in Settings → App icon. If you had picked Sunset, Cosmos, Particle or Wave, KiJi now shows Ripple, because those icons were retired.
 
 ### Fixed
 
-- Security update for a bundled TLS library (rustls).
+- Security update for a built-in networking library.
 
 ## [1.4.0] - 2026-10-16
 
 ### Added
 
-- Reader themes: 13 book-style themes (Paper, Sepia, Calm, Eye Care, Washi, Parchment, Newsprint, E-Ink, Solarized, Quiet, Midnight, OLED Night, High Contrast), each with a light and a dark version. Choose one in Settings → Appearance → Theme → Reader theme.
+- Reader themes: 13 book-inspired looks for reading, including Paper, Sepia, Calm, Washi, Newsprint, E-Ink, Solarized, Midnight and High Contrast, each in a light and a dark version. Pick one in Settings → Appearance → Theme → Reader theme.
 
 ### Changed
 
-- The application menu and the macOS menu-bar name are **Reader**. About, update copy, and mail subjects use the official name **KiJi Reader**. The app bundle stays `KiJi.app`.
+- KiJi now uses its full name, KiJi Reader, in About, update messages and feedback emails, and the app menu is called Reader.
 
 ### Fixed
 
-- A rare timing error no longer fails the build checks while every test passes.
-- Security updates for bundled libraries (undici, vitest, DOMPurify, source-map-js).
+- Security updates for several built-in libraries.
 
 ## [1.3.0] - 2026-09-24
 
-### Fixed
-
-- Long-session WebContent growth during interval refresh: scheduler wakes share a `wakeId` across event and eval (including sleep/resume), native cycles cancel by `cycleId`/`request_id`, station pause keeps one active background cycle until drain, and planning no longer pulls favicon blobs into the renderer.
-- Article-list search stays correct while feeds sync: generation-safe filter pages, FTS membership lookup, and refresh/read/save revalidation.
-- Article-list loading shimmer fills the items pane on tall windows instead of stretching to the viewport.
-- Warm station lists refresh from SQLite after an interval cycle instead of keeping a stale snapshot.
-- Sidebar drag-and-sort ranking, v17 migration, reorder writes, import throughput, and TagManager feed-cache growth.
-
 ### Added
 
-- Read library item.
-- Draggable header areas.
-- Footer sync copy named from the in-flight refresh (library, one feed, or station).
-- Windows/Linux in-app KiJi menu category.
+- A Read view in the library, so you can find articles you have already read.
+- You can drag the window by more of the header area.
+- The sync status at the bottom of the sidebar now says what is syncing: your whole library, one feed or a station.
+- Windows and Linux: a KiJi menu in the app's menu bar.
 
 ### Changed
 
-- Station names paint before favicon blobs load. Unstationed Library and restore lookup use a slim sidebar snapshot.
+- Station names appear right away instead of waiting for feed icons, and the sidebar loads faster.
+
+### Fixed
+
+- KiJi no longer uses more and more memory when left running with background refresh, including after your Mac wakes from sleep.
+- Searching your articles stays accurate while feeds sync.
+- The loading placeholder in the article list now fits tall windows.
+- Station lists show new articles after a background refresh instead of an outdated list.
+- Dragging feeds and stations to reorder them in the sidebar sorts correctly, and large imports are faster.
 
 ## [1.2.0] - 2026-09-08
 
-Reliability and system-fix release after 1.1.1: Windows window open, article-list totals, sidebar, startup, and security.
-
-### Fixed
-
-- Windows 10: File → Settings…, the sidebar gear, and Ctrl+, now open Settings (async secondary webviews; WebView2 no longer deadlocks).
-- Cold station/feed switch no longer sticks the article list at **100 Items** with load-more dead; load-more no longer re-renders the app shell.
-- Sidebar fold persist, chevron ghost fill, drag-and-sort, long-title ellipsis, and refresh-icon spin origin.
-- Feed-management sticky headers no longer show dark Modern-theme bands (WKWebView backdrop ghost).
-- Windows/Linux release rustc unused warnings silenced; CI paint-gate jsdom teardown no longer flakes.
-- Security: `defuddle` 0.19.3, `serde_with` 3.21.0, `browserslist` 4.28.9, Vite 7.3.6 / `esbuild` 0.28.1.
-- OPML import: the switch into the imported station/feed now awaits the first fetch (bounded to the switch's foreground cap; the rest refreshes in the background) and holds the skeleton until it settles — showing fetched rows immediately, or an honest empty view — instead of racing a 30s hold timer against background cycles, which could clear onto an empty view with rows already committed or blank rows right after switching back (`FeedContext.tsx`).
-- Refresh reliability: background refresh cycles superseded by station switching (the native IPC has no cancellation channel, so Rust still commits fetched articles) now publish their committed inserts and count syncs instead of being discarded, so the visible list no longer stays stale until the next switch (`feedSchedulerService.ts`, `nativeFeedRefresh.ts`).
+A reliability release with fixes for Windows, the article list, the sidebar and startup.
 
 ### Added
 
-- Settings → Appearance **Surface opacity** slider (sidebar / Settings sidebar fill; Classic list stays solid).
-- Settings **Wave** app icon: Light plate + three bowed bars (`kiji-logo-wave.png`, `src-tauri/icons-wave`). Light stays the packaged default.
-- `website-sync-on-release.yml`: on GitHub Release publish, generate `release.json`, attach to the release, and dispatch `kiji-website` sync (`scripts/generate-release-manifest.mjs`).
-
-### Fixed
-
-- Cold-start freeze (~30s beach ball on a 2.5 GB library): `PRAGMA quick_check` no longer runs synchronously in the Tauri `setup()` hook on every launch. A `kiji.db.dirty` marker is written at open and removed after the exit WAL checkpoint; only when the marker survives (unclean shutdown) does the check run, 15s after startup on a background read-only connection, logging the outcome to diagnostics (`db/mod.rs`, `lib.rs`).
-- Secondary windows (`settings`/`article`/`update`) recreated by macOS session restore no longer boot full renderers at launch (extra WebContent processes, 2.4 MB bundle parse each, and a spurious `shell_update_window_get_data` error every launch). `UserInitiatedWindowsState` records windows opened via app commands; an `on_page_load` hook destroys secondary webviews that load without an entry (`shell/window.rs`, `lib.rs`).
-- Resource monitor false "threshold breach" errors: WebKit XPC helpers are launchd children, so system-wide totals also counted Safari/Mail/iOS-app processes (e.g. `processCount=39` at launch). `/System/iOSSupport/` WebKit processes are now excluded from classification, and breach alerts fire only on attributable metrics — native CPU, native memory, disk free (`diagnostics/snapshot.rs`, `diagnostics/resource_monitor.rs`).
+- Surface opacity: a slider in Settings → Appearance sets how see-through the sidebar is.
+- A new Wave app icon in Settings → App icon.
 
 ### Changed
 
-- `user-settings.json` is only rewritten at load when its normalized serialization differs from the on-disk content (was: unconditional write every launch) (`settings.rs`).
-- "Clean Old Articles" now runs `PRAGMA wal_checkpoint(TRUNCATE); VACUUM;` on a background writer task after deleting rows so the database file actually shrinks; the deleted count still returns immediately (`db/articles.rs`).
-- Removed the renderer's duplicate `shell_main_window_apply_saved_bounds` IPC on bootstrap (native `setup()` already applies saved bounds before the webview loads); dropped the now-unused command and `MainWindowBoundsSaveGuard` managed state (`renderer.tsx`, `shell/window.rs`).
-- `ThemeProvider` loads settings once via `settingsManager.getSettings()` instead of three per-field getters (3 native IPC round-trips) at mount and on cross-window settings changes (`ThemeContext.tsx`).
-- Packaged and first-run app icon is the Light family (`src-tauri/icons`, white tile + four bars) instead of Cosmos; Settings still offers the other built-in variants.
+- The default app icon is now Light instead of Cosmos. You can still pick the others in Settings.
+- Clean Old Articles now frees disk space by shrinking the database file.
+- KiJi does a little less work at launch and when you change settings.
+
+### Fixed
+
+- Large libraries no longer freeze KiJi for up to 30 seconds at launch.
+- Windows 10: File → Settings…, the sidebar gear and Ctrl+, open Settings again.
+- Switching to a station or feed no longer gets stuck at 100 items with Load more not working.
+- After importing an OPML file, KiJi shows the new feeds' articles as soon as they arrive instead of sometimes showing an empty list.
+- Articles fetched in the background while you switch stations now show up right away instead of after your next switch.
+- Sidebar: folded sections stay folded, long titles are shortened neatly, drag-to-sort works, and the refresh icon spins in place.
+- Feed management no longer shows dark bands behind its headers in the Modern theme.
+- macOS no longer reopens hidden Settings, article or update windows at launch, which used extra memory.
+- KiJi no longer shows false resource warnings caused by other apps.
+- Security updates for several built-in libraries.
 
 ## [1.0.1] - 2026-07-08
 

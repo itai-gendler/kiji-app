@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   compareReleaseVersions,
+  normalizeReleaseNoteSections,
   pickRecommendedDownload,
 } from '@/services/system/appUpdateService';
 import type { ReleaseDownloadOption } from '@/services/system/appUpdateTypes';
@@ -48,6 +49,44 @@ describe('appUpdateService', () => {
 
     it('prefers mac arm64 assets on macOS', () => {
       expect(pickRecommendedDownload(options)?.id).toBe('mac-arm64');
+    });
+  });
+
+  describe('normalizeReleaseNoteSections', () => {
+    it('keeps well-formed groups in order', () => {
+      expect(normalizeReleaseNoteSections({
+        sections: [
+          { title: 'New', items: ['Reader themes.'] },
+          { title: 'Fixed', items: ['Crash on launch.', 'Wrong unread count.'] },
+        ],
+      })).toEqual([
+        { title: 'New', items: ['Reader themes.'] },
+        { title: 'Fixed', items: ['Crash on launch.', 'Wrong unread count.'] },
+      ]);
+    });
+
+    it('returns no groups for legacy or malformed manifests', () => {
+      expect(normalizeReleaseNoteSections(undefined)).toEqual([]);
+      expect(normalizeReleaseNoteSections({ sections: 'Fixed stuff' })).toEqual([]);
+      expect(normalizeReleaseNoteSections({
+        sections: [
+          { title: 'Fixed', items: [42, '', '  '] },
+          { title: '', items: ['No title'] },
+          null,
+        ],
+      })).toEqual([]);
+    });
+
+    it('bounds remote input', () => {
+      const sections = normalizeReleaseNoteSections({
+        sections: Array.from({ length: 20 }, (_, index) => ({
+          title: `Group ${index}`,
+          items: Array.from({ length: 50 }, () => 'x'.repeat(2_000)),
+        })),
+      });
+      expect(sections).toHaveLength(8);
+      expect(sections[0].items).toHaveLength(30);
+      expect(sections[0].items[0].length).toBeLessThanOrEqual(600);
     });
   });
 });

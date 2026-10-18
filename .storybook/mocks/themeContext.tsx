@@ -52,6 +52,8 @@ export function useTheme() {
     updateFontFamilies: asyncNoop,
     readingLayout,
     updateReadingLayout: asyncNoop,
+    // Stories pass the accent to views directly from the Reader theme toolbar.
+    readerAccent: null,
   };
 }
 
