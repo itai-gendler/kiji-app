@@ -30,8 +30,8 @@
 }
 
 .smart-view-item.is-selected {
-  background-color: var(--theme-hover-overlay-dark);
-  color: var(--system-accent-color);
+  background-color: var(--sidebar-selected-bg);
+  color: var(--sidebar-selected-color);
   font-weight: 600;
   border-radius: 4px;
 }
