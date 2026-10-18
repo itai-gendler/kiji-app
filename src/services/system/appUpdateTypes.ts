@@ -10,6 +10,20 @@ export interface ReleaseDownloadOption {
   size?: number;
 }
 
+/** One group of release notes ("New", "Improved", "Fixed"), plain text items. */
+export interface ReleaseNotesSection {
+  title: string;
+  items: string[];
+}
+
+/** `release.json` `notes`, generated from the confirmed CHANGELOG.md section. */
+export interface ReleaseNotes {
+  summary?: string;
+  sections: ReleaseNotesSection[];
+  /** Website locales (`zh-Hans`, `ja`); the app UI is English and reads the top level. */
+  translations?: Record<string, { summary?: string; sections: ReleaseNotesSection[] }>;
+}
+
 export interface ReleaseManifest {
   productName?: string;
   version: string;
@@ -18,6 +32,7 @@ export interface ReleaseManifest {
   notesUrl?: string;
   updatesFeedUrl?: string;
   checksumsUrl?: string;
+  notes?: ReleaseNotes;
   downloadOptions?: ReleaseDownloadOption[];
 }
 
@@ -26,6 +41,8 @@ export interface UpdateAvailability {
   latestVersion: string;
   releasedAt?: string;
   summary: string;
+  /** What changed, grouped; empty for manifests published before notes existed. */
+  sections: ReleaseNotesSection[];
   downloadUrl: string;
   notesUrl?: string;
 }

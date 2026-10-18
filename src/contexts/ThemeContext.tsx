@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback, useMemo } from 'react';
 import {
   settingsManager,
   DEFAULT_SETTINGS,
@@ -27,6 +27,17 @@ interface ThemeContextType {
   updateFontFamilies: (fonts: Partial<FontFamilySettings>) => Promise<void>;
   readingLayout: ReadingLayoutSettings;
   updateReadingLayout: (layout: Partial<ReadingLayoutSettings>) => Promise<void>;
+  /**
+   * The selected reader theme and scheme, also in windows that keep the built-in
+   * palette, so they can scope the theme's `--rt-accent` to match the main window.
+   * Null on the built-in theme (the system accent already matches).
+   */
+  readerAccent: ReaderAccent | null;
+}
+
+export interface ReaderAccent {
+  themeId: string;
+  scheme: 'light' | 'dark';
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -55,6 +66,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   const activeReaderTheme = appliesReaderTheme
     ? resolveActiveReaderTheme(readerTheme)
     : undefined;
+  const selectedReaderThemeId = resolveActiveReaderTheme(readerTheme)?.id;
   const skipInitialThemePersistRef = useRef(true);
 
   const getSystemTheme = (): 'light' | 'dark' => (
@@ -268,6 +280,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     return window.kijiAPI.onSettingsChanged(handleSettingsChanged);
   }, []);
 
+  const readerAccent = useMemo<ReaderAccent | null>(() => (
+    selectedReaderThemeId ? { themeId: selectedReaderThemeId, scheme: effectiveTheme } : null
+  ), [effectiveTheme, selectedReaderThemeId]);
+
   return (
     <ThemeContext.Provider value={{
       theme,
@@ -277,6 +293,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       updateFontFamilies,
       readingLayout,
       updateReadingLayout,
+      readerAccent,
     }}
     >
       {children}

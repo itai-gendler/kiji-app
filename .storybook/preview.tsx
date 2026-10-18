@@ -126,7 +126,11 @@ function ThemeDebugRoot({
 
 const withThemeDebug: Decorator = (Story, context) => {
   // Every reader theme has both versions; the Light/Dark toolbar picks one, as in the app.
-  const readerTheme = findReaderTheme(context.globals.readerTheme);
+  // Accent-only stories (Settings-style windows) keep the built-in palette on the root
+  // and pass the reader theme's accent to the view themselves.
+  const readerTheme = context.parameters.kiji?.readerThemeScope === 'accent'
+    ? undefined
+    : findReaderTheme(context.globals.readerTheme);
   const theme = context.globals.theme === 'dark' ? 'dark' : 'light';
   const uiTheme = context.globals.uiTheme === 'classic' ? 'classic' : 'modern';
   const os = context.globals.platform === 'windows'
@@ -160,7 +164,7 @@ const preview: Preview = {
     },
     options: {
       storySort: {
-        order: ['Theme Debug', ['Reader Themes', 'Sidebar', 'Article List', 'Article View']],
+        order: ['Theme Debug', ['Reader Themes', 'Sidebar', 'Article List', 'Article View', 'Update Window']],
       },
     },
   },
