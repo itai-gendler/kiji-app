@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## [1.6.0] - 2026-10-18
+
+### Added
+
+- Articles give pictures more room: single images and videos can spread wider than the text, rows of images become galleries, wide tables and code can use the margins, and clicking an image opens it full-window.
+- The top of an article shows when it was published and how long it takes to read, and a thin bar shows your progress as you read.
 
 ### Changed
 
+- In light mode, the selected item in the sidebar is easier to read, and feed icons in the article list sit on a light background.
 - The About and update window lists what's new in an update, grouped into New, Improved and Fixed, so you can read the notes before downloading. It has a cleaner layout, uses your reader theme's accent color, and its buttons match your system's style.
 
 ### Fixed
