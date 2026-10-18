@@ -1778,7 +1778,11 @@ describe("feedSchedulerService", () => {
       insertedArticles: 0,
       feedResults: [],
     };
-    type NativeOptions = { onlyFeedIds?: string[]; skipFeedIdsForThisCycle?: string[] };
+    type NativeOptions = {
+      onlyFeedIds?: string[];
+      skipFeedIdsForThisCycle?: string[];
+      bypassFailureBackoff?: boolean;
+    };
     const callOptions = (index: number): NativeOptions | undefined => (
       previewNativeCycle.mock.calls[index]?.[0] as { options?: NativeOptions } | undefined
     )?.options;
@@ -1866,6 +1870,110 @@ describe("feedSchedulerService", () => {
       } finally {
         unsubscribe();
       }
+    });
+
+    const nativeCycleKey = (index: number): string | undefined => (
+      previewNativeCycle.mock.calls[index]?.[0] as { cycleId?: string } | undefined
+    )?.cycleId;
+    const emitNativeFeedSettled = (feedId: string, cycleId: string | undefined) => {
+      getSchedulerEventHandler("scheduler:native-cycle-feed")?.({
+        payload: { feedId, insertedCount: 0, cycleId },
+      });
+    };
+
+    it("re-stashes the unfinished feeds of an interrupted import cycle after the station cycle", async () => {
+      // Interval not overdue: an owed `interval-tick` would wait a full interval.
+      getE2eConfig.mockReturnValue({ schedulerIntervalMs: 60_000 });
+      let releaseImport!: (value: unknown) => void;
+      let call = 0;
+      previewNativeCycle.mockImplementation(() => {
+        call += 1;
+        if (call === 2) {
+          return new Promise((resolve) => {
+            releaseImport = resolve;
+          });
+        }
+        return Promise.resolve(emptyNativeResult);
+      });
+      const events: Array<{ type: string }> = [];
+      const unsubscribe = feedScheduler.on((event) => {
+        events.push(event);
+      });
+
+      try {
+        await feedScheduler.start();
+        getSchedulerEventHandler("scheduler:cycle-tick")?.();
+        await vi.waitFor(() => {
+          expect(events.filter((event) => event.type === "cycle-complete")).toHaveLength(1);
+        });
+
+        // OPML import boost starts a scoped cycle; one feed settles, then a
+        // station click interrupts it.
+        feedScheduler.boostMany(["import-1", "import-2", "import-3"]);
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+        });
+        emitNativeFeedSettled("import-1", nativeCycleKey(1));
+        feedScheduler.pauseForStationSelection();
+        feedScheduler.boostMany(["station-1"]);
+        releaseImport(emptyNativeResult);
+        await settle();
+        expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+
+        feedScheduler.resumeAfterStationSelection();
+        await vi.waitFor(() => {
+          expect(previewNativeCycle).toHaveBeenCalledTimes(4);
+        });
+
+        expect(callOptions(2)?.onlyFeedIds).toEqual(["station-1"]);
+        expect(callOptions(3)?.onlyFeedIds).toEqual(["import-2", "import-3"]);
+        expect(getRobustnessSnapshot().counters["scheduler.interruptedScopeRestashed"]).toBe(1);
+
+        // No full-library cycle is owed for an interrupted scoped cycle.
+        await settle(20);
+        expect(previewNativeCycle).toHaveBeenCalledTimes(4);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("keeps one-shot backoff bypass on a re-stashed interrupted scope", async () => {
+      getE2eConfig.mockReturnValue({ schedulerIntervalMs: 60_000 });
+      let releaseImport!: (value: unknown) => void;
+      let call = 0;
+      previewNativeCycle.mockImplementation(() => {
+        call += 1;
+        if (call === 1) {
+          return new Promise((resolve) => {
+            releaseImport = resolve;
+          });
+        }
+        return Promise.resolve(emptyNativeResult);
+      });
+
+      await feedScheduler.start();
+      // Paused boost → resume cycle carries the one-shot backoff bypass.
+      feedScheduler.pauseForStationSelection();
+      feedScheduler.boostMany(["import-1", "import-2"]);
+      feedScheduler.resumeAfterStationSelection();
+      await vi.waitFor(() => {
+        expect(previewNativeCycle).toHaveBeenCalledTimes(1);
+      });
+      expect(callOptions(0)?.bypassFailureBackoff).toBe(true);
+
+      // A second station click interrupts it before anything settled.
+      feedScheduler.pauseForStationSelection();
+      releaseImport(emptyNativeResult);
+      await settle();
+      feedScheduler.resumeAfterStationSelection();
+      await vi.waitFor(() => {
+        expect(previewNativeCycle).toHaveBeenCalledTimes(2);
+      });
+
+      expect(callOptions(1)?.onlyFeedIds).toEqual(["import-1", "import-2"]);
+      expect(callOptions(1)?.bypassFailureBackoff).toBe(true);
+      await settle(20);
+      expect(previewNativeCycle).toHaveBeenCalledTimes(2);
     });
 
     it("does not add a full cycle when the station switch interrupted nothing", async () => {

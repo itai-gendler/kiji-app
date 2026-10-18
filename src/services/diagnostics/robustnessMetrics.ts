@@ -19,6 +19,7 @@ export const ROBUSTNESS_COUNTER_KEYS = [
   'scheduler.cancelledFetchSkipped',
   'scheduler.stationPauseSafetyRelease',
   'scheduler.fullFollowUpCycle',
+  'scheduler.interruptedScopeRestashed',
   'helperTasks.pendingCancelledOnClear',
   'opml.importPartialFailures',
   'savedZip.markdownMatched',
