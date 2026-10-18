@@ -55,8 +55,8 @@
 }
 
 .feed-list-item-selected {
-  background-color: var(--theme-hover-overlay-dark);
-  color: var(--system-accent-color);
+  background-color: var(--sidebar-selected-bg);
+  color: var(--sidebar-selected-color);
   border-radius: 4px;
 }
 

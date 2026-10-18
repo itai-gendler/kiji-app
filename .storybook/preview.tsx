@@ -18,6 +18,21 @@ import '../src/styles/ui-theme-classic.css';
 import '../src/styles/reader-themes.css';
 import './preview.css';
 
+/** macOS accent colors (System Settings → Appearance), so stories show a light accent like Yellow. */
+const MACOS_ACCENTS = [
+  { value: 'blue', title: 'Blue', color: '#007AFF' },
+  { value: 'purple', title: 'Purple', color: '#A550A7' },
+  { value: 'pink', title: 'Pink', color: '#F74F9E' },
+  { value: 'red', title: 'Red', color: '#FF5257' },
+  { value: 'orange', title: 'Orange', color: '#F7821B' },
+  { value: 'yellow', title: 'Yellow', color: '#FFC600' },
+  { value: 'green', title: 'Green', color: '#62BA46' },
+  { value: 'graphite', title: 'Graphite', color: '#8C8C8C' },
+] as const;
+
+const accentColor = (value: unknown): string =>
+  MACOS_ACCENTS.find((accent) => accent.value === value)?.color ?? MACOS_ACCENTS[0].color;
+
 interface RootStateSnapshot {
   theme: string | null;
   uiTheme: string | null;
@@ -61,8 +76,10 @@ function ThemeDebugRoot({
   uiTheme,
   os,
   readerTheme,
+  accent,
 }: {
   children: ReactNode;
+  accent: string;
   theme: 'light' | 'dark';
   uiTheme: 'modern' | 'classic';
   os: 'macos' | 'windows' | 'linux';
@@ -91,7 +108,7 @@ function ThemeDebugRoot({
     const presetAccent = readerTheme
       ? getComputedStyle(document.documentElement).getPropertyValue('--rt-accent').trim()
       : '';
-    document.documentElement.style.setProperty('--system-accent-color', presetAccent || '#0a84ff');
+    document.documentElement.style.setProperty('--system-accent-color', presetAccent || accent);
     document.documentElement.style.setProperty('--max-article-width', '750px');
     document.documentElement.style.setProperty('--max-article-content-width', '720px');
     document.documentElement.style.setProperty('--article-content-font-size', '18px');
@@ -119,7 +136,7 @@ function ThemeDebugRoot({
         Reflect.set(window, 'kijiAPI', previous.kijiApi);
       }
     };
-  }, [os, readerTheme, theme, uiTheme]);
+  }, [accent, os, readerTheme, theme, uiTheme]);
 
   return <div className="theme-debug-backdrop">{children}</div>;
 }
@@ -138,17 +155,19 @@ const withThemeDebug: Decorator = (Story, context) => {
     : context.globals.platform === 'linux'
       ? 'linux'
       : 'macos';
+  const accent = accentColor(context.globals.accent);
   const variant = (context.parameters.kiji?.variant ?? 'sidebar-default') as ThemeDebugVariant;
   selectThemeDebugVariant(variant);
   selectThemeDebugTheme(theme);
 
   return (
     <ThemeDebugRoot
-      key={`${context.id}:${theme}:${uiTheme}:${os}:${readerTheme?.id ?? 'default'}`}
+      key={`${context.id}:${theme}:${uiTheme}:${os}:${readerTheme?.id ?? 'default'}:${accent}`}
       theme={theme}
       uiTheme={uiTheme}
       os={os}
       readerTheme={readerTheme}
+      accent={accent}
     >
       <Story />
     </ThemeDebugRoot>
@@ -173,6 +192,7 @@ const preview: Preview = {
     uiTheme: 'modern',
     platform: 'macos',
     readerTheme: 'default',
+    accent: 'blue',
   },
   globalTypes: {
     theme: {
@@ -207,6 +227,14 @@ const preview: Preview = {
             title: readerTheme.label,
           })),
         ],
+      },
+    },
+    accent: {
+      description: 'macOS accent color (reader themes use their own)',
+      toolbar: {
+        icon: 'paintbrush',
+        dynamicTitle: true,
+        items: MACOS_ACCENTS.map(({ value, title }) => ({ value, title })),
       },
     },
     platform: {

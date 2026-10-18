@@ -81,6 +81,18 @@
 
   --theme-hover-overlay: rgba(0, 0, 0, 0.04);
   --theme-hover-overlay-dark: rgba(0, 0, 0, 0.08);
+
+  /* Selected sidebar row (stations, library views, feeds). The system accent
+     can be as light as yellow, so light mode tints the row with the accent and
+     darkens the accent toward the ink for the text (>= 4.5:1 for every macOS
+     accent; test/styles/sidebarSelectionContrast.test.ts). */
+  --sidebar-selected-bg: color-mix(in srgb, var(--system-accent-color) 14%, transparent);
+  --sidebar-selected-color: color-mix(in srgb, var(--system-accent-color) 30%, var(--theme-primary-color));
+
+  /* Article-list favicon chip: a light card in light mode; dark mode needs the
+     lighter gray chip so dark logos stay visible. */
+  --article-list-favicon-chip-bg: #FFFFFF;
+  --article-list-favicon-chip-ring: rgba(0, 0, 0, 0.1);
   --resize-handle-hover-bg: rgba(0, 0, 255, 0.1);
   --resize-handle-drag-bg: rgba(0, 0, 255, 0.3);
   --resize-handle-guide-bg: rgba(0, 0, 255, 0.35);
@@ -148,6 +160,11 @@ html[data-os="other"] {
 
   --theme-hover-overlay: rgba(255, 255, 255, 0.06);
   --theme-hover-overlay-dark: rgba(255, 255, 255, 0.1);
+
+  --sidebar-selected-bg: var(--theme-hover-overlay-dark);
+  --sidebar-selected-color: var(--system-accent-color);
+  --article-list-favicon-chip-bg: color-mix(in srgb, var(--theme-text-primary) 45%, var(--theme-article-bg));
+  --article-list-favicon-chip-ring: transparent;
 
   --theme-shadow: rgba(0, 0, 0, 0.45);
 
