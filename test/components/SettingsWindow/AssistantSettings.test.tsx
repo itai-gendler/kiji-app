@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AssistantStatus } from "@/lib/tauriClient/assistant";
 
 const baseStatus = (): AssistantStatus => ({
@@ -57,7 +57,13 @@ vi.mock("@/services/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { AssistantSettings } from "@/components/SettingsWindow/AssistantSettings";
+import { AssistantSettings, COPIED_RESET_MS } from "@/components/SettingsWindow/AssistantSettings";
+
+const clientRow = (id: string): HTMLElement => {
+  const row = document.querySelector<HTMLElement>(`[data-client="${id}"]`);
+  if (!row) throw new Error(`No row for ${id}`);
+  return row;
+};
 
 describe("AssistantSettings", () => {
   beforeEach(() => {
@@ -142,8 +148,76 @@ describe("AssistantSettings", () => {
     render(<AssistantSettings />);
     fireEvent.click((await screen.findAllByRole("button", { name: "Copy Command" }))[0]);
     await waitFor(() => expect(clipboardWrite).toHaveBeenCalled());
+    expect(assistant.getClientSetup).toHaveBeenCalledWith("claude-code");
     expect(clipboardWrite.mock.calls[0][0].text).toContain("--mcp");
-    expect(await screen.findByText("Copied. Run this once in Terminal.")).toBeTruthy();
+    expect(await screen.findByText("Copied. Paste it in Terminal and press Return.")).toBeTruthy();
+  });
+
+  it("shows Copied in the row, then goes back to the label", async () => {
+    render(<AssistantSettings />);
+    await screen.findAllByRole("button", { name: "Copy Command" });
+    vi.useFakeTimers();
+    try {
+      const row = clientRow("claude-code");
+      await act(async () => {
+        fireEvent.click(within(row).getByRole("button", { name: "Copy Command" }));
+      });
+      expect(within(row).getByRole("button", { name: "Copied" })).toBeTruthy();
+      // Only the row that was copied changes.
+      expect(within(clientRow("command")).getByRole("button", { name: "Copy Command" })).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(COPIED_RESET_MS + 10);
+      });
+      expect(within(row).queryByRole("button", { name: "Copied" })).toBeNull();
+      expect(within(row).getByRole("button", { name: "Copy Command" })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("copies from the secondary button on rows with another main action", async () => {
+    assistant.getClientSetup.mockResolvedValueOnce({
+      client: "cursor",
+      text: "{}",
+      hint: "Or add this to ~/.cursor/mcp.json.",
+      hasInstallLink: true,
+    });
+    render(<AssistantSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy setup for Cursor" }));
+    await waitFor(() => expect(assistant.getClientSetup).toHaveBeenCalledWith("cursor"));
+    expect(await screen.findByRole("button", { name: "Copied setup for Cursor" })).toBeTruthy();
+    const row = clientRow("cursor");
+    expect(within(row).getByRole("status").textContent).toBe("Copied. Paste it into Cursor's tool settings.");
+    // The app's own hint may name files; it never shows.
+    expect(screen.queryByText(/mcp\.json/)).toBeNull();
+  });
+
+  it("opens Cursor and VS Code from their main buttons", async () => {
+    assistant.openClientLink.mockResolvedValue(undefined);
+    render(<AssistantSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to Cursor" }));
+    await waitFor(() => expect(assistant.openClientLink).toHaveBeenCalledWith("cursor"));
+    expect(within(clientRow("cursor")).getByRole("status").textContent).toMatch(/Opening Cursor/);
+    fireEvent.click(screen.getByRole("button", { name: "Add to VS Code" }));
+    await waitFor(() => expect(assistant.openClientLink).toHaveBeenCalledWith("vscode"));
+    expect(clipboardWrite).not.toHaveBeenCalled();
+  });
+
+  it("explains a failed open in plain words", async () => {
+    assistant.openClientLink.mockRejectedValue("Failed to launch cursor://anysphere.cursor-deeplink/mcp/install");
+    render(<AssistantSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to Cursor" }));
+    expect(await screen.findByText("Couldn't open Cursor. Is it installed? You can copy the setup instead.")).toBeTruthy();
+    expect(screen.queryByText(/cursor:\/\//)).toBeNull();
+  });
+
+  it("shows a hint while access is off and keeps the buttons usable", async () => {
+    render(<AssistantSettings />);
+    expect(await screen.findByText(/Access is off\. Turn it on above/)).toBeTruthy();
+    const download = screen.getByRole("button", { name: "Download Extension" }) as HTMLButtonElement;
+    expect(download.disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText("Let assistants read your KiJi library"));
+    expect(await screen.findByText("Pick the app you use. KiJi needs to be open with access turned on.")).toBeTruthy();
   });
 
   it("saves the Claude Desktop extension where the user picks", async () => {
@@ -153,6 +227,25 @@ describe("AssistantSettings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Download Extension" }));
     await waitFor(() => expect(assistant.writeExtension).toHaveBeenCalledWith("/Users/me/Downloads/KiJi.mcpb"));
     expect(await screen.findByText(/Double-click KiJi.mcpb/)).toBeTruthy();
+    expect(within(clientRow("claude-desktop")).getByRole("status").textContent).toMatch(/Double-click/);
+  });
+
+  it("does nothing when the save dialog is canceled", async () => {
+    saveFile.mockResolvedValue({ canceled: true });
+    render(<AssistantSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download Extension" }));
+    await waitFor(() => expect(saveFile).toHaveBeenCalled());
+    expect(assistant.writeExtension).not.toHaveBeenCalled();
+    expect(within(clientRow("claude-desktop")).getByRole("status").textContent).toBe("");
+  });
+
+  it("explains a failed extension save without the raw error", async () => {
+    saveFile.mockResolvedValue({ canceled: false, filePath: "/Volumes/ro/KiJi.mcpb" });
+    assistant.writeExtension.mockRejectedValue("Permission denied (os error 13)");
+    render(<AssistantSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download Extension" }));
+    expect(await screen.findByText("Couldn't save the extension. Try another folder.")).toBeTruthy();
+    expect(screen.queryByText(/os error/)).toBeNull();
   });
 
   it("resets access only after confirmation", async () => {

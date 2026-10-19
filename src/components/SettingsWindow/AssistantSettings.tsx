@@ -9,27 +9,18 @@ import type { TagRecord } from '@/lib/tauriClient/contracts';
 import { useMountEffect } from '@/hooks/useLifecycleEffects';
 import { subscribeToWindowFocus } from '@/services/tauri/tauriEventSubscription';
 import { logger } from '@/services/logger';
+import {
+  ASSISTANT_CLIENT_ROWS,
+  AssistantConnectList,
+  type AssistantClientNoticeTarget,
+} from './AssistantConnectList';
 import './AssistantSettings.css';
 
 const STATUS_POLL_MS = 3000;
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
-
-interface ClientRow {
-  id: AssistantClientId;
-  name: string;
-  copyLabel: string;
-  installLabel?: string;
-}
-
-const CLIENT_ROWS: ClientRow[] = [
-  { id: 'claude-desktop', name: 'Claude Desktop', copyLabel: 'Copy Setup' },
-  { id: 'claude-code', name: 'Claude Code', copyLabel: 'Copy Command' },
-  { id: 'cursor', name: 'Cursor', copyLabel: 'Copy Setup', installLabel: 'Add to Cursor' },
-  { id: 'vscode', name: 'VS Code', copyLabel: 'Copy Setup', installLabel: 'Add to VS Code' },
-  { id: 'codex', name: 'Codex', copyLabel: 'Copy Setup' },
-  { id: 'command', name: 'Other app', copyLabel: 'Copy Command' },
-];
+/** How long a Copy button shows "Copied" before going back to its label. */
+export const COPIED_RESET_MS = 2500;
 
 const GENERIC_ERROR = 'Something went wrong. Please try again.';
 
@@ -88,7 +79,9 @@ export const AssistantSettings: React.FC = () => {
   const [stations, setStations] = useState<TagRecord[]>([]);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [clientNotice, setClientNotice] = useState<{ client: AssistantClientId | 'extension' | 'url'; text: string } | null>(null);
+  const [clientNotice, setClientNotice] = useState<{ client: AssistantClientNoticeTarget; text: string } | null>(null);
+  const [copiedClient, setCopiedClient] = useState<AssistantClientId | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
   const [portDraft, setPortDraft] = useState<string>('');
   const [portNotice, setPortNotice] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -128,6 +121,7 @@ export const AssistantSettings: React.FC = () => {
       mountedRef.current = false;
       window.clearInterval(timer);
       unsubscribeFocus();
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     };
   });
 
@@ -147,15 +141,28 @@ export const AssistantSettings: React.FC = () => {
     }
   };
 
-  const showClientNotice = (client: AssistantClientId | 'extension' | 'url', text: string) => {
+  const showClientNotice = (client: AssistantClientNoticeTarget, text: string) => {
     if (mountedRef.current) setClientNotice({ client, text });
+  };
+
+  const markCopied = (client: AssistantClientId) => {
+    if (!mountedRef.current) return;
+    setCopiedClient(client);
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = window.setTimeout(() => {
+      copiedTimerRef.current = null;
+      if (mountedRef.current) setCopiedClient((current) => (current === client ? null : current));
+    }, COPIED_RESET_MS);
   };
 
   const copySetup = async (client: AssistantClientId) => {
     try {
       const setup = await tauriClient.assistant.getClientSetup(client);
       await tauriClient.system.clipboard.writeText({ text: setup.text });
-      showClientNotice(client, `Copied. ${setup.hint}`);
+      // App rows use plain words; the app's own hint can name files and folders.
+      const plainHint = ASSISTANT_CLIENT_ROWS.find((row) => row.id === client)?.copiedHint ?? setup.hint;
+      showClientNotice(client, `Copied. ${plainHint}`);
+      markCopied(client);
     } catch (error) {
       const message = typeof error === 'string' && error.startsWith('Turn on') ? error : GENERIC_ERROR;
       showClientNotice(client, message);
@@ -168,7 +175,7 @@ export const AssistantSettings: React.FC = () => {
       await tauriClient.assistant.openClientLink(client);
       showClientNotice(client, `Opening ${name}… Confirm there to add KiJi.`);
     } catch (error) {
-      showClientNotice(client, `Couldn't open ${name}. Is it installed? You can use Copy Setup instead.`);
+      showClientNotice(client, `Couldn't open ${name}. Is it installed? You can copy the setup instead.`);
       logger.warn('AssistantSettings', 'Failed to open install link', { error, client });
     }
   };
@@ -417,43 +424,14 @@ export const AssistantSettings: React.FC = () => {
         </div>
       </section>
 
-      <section className="settings-group">
-        <h3 className="settings-group-title">Connect an Assistant</h3>
-        <div className="settings-group-body">
-          {CLIENT_ROWS.map((row) => (
-            <div key={row.id} className="settings-item assistant-client-row">
-              <div className="settings-item-info">
-                <label className="settings-item-label">{row.name}</label>
-                {row.id === 'claude-desktop' ? (
-                  <p className="settings-item-description">Easiest: download the extension and double-click it.</p>
-                ) : null}
-                {clientNotice && (clientNotice.client === row.id || (row.id === 'claude-desktop' && clientNotice.client === 'extension')) ? (
-                  <p className="settings-inline-status" role="status" aria-live="polite">{clientNotice.text}</p>
-                ) : null}
-              </div>
-              <div className="settings-item-control assistant-client-actions">
-                {row.id === 'claude-desktop' ? (
-                  <button type="button" className="settings-action-button assistant-compact-button" onClick={() => void saveExtension()}>
-                    Download Extension
-                  </button>
-                ) : null}
-                {row.installLabel ? (
-                  <button
-                    type="button"
-                    className="settings-action-button assistant-compact-button"
-                    onClick={() => void openInstallLink(row.id, row.name)}
-                  >
-                    {row.installLabel}
-                  </button>
-                ) : null}
-                <button type="button" className="settings-action-button assistant-compact-button" onClick={() => void copySetup(row.id)}>
-                  {row.copyLabel}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      <AssistantConnectList
+        accessEnabled={settings.enabled}
+        notice={clientNotice}
+        copiedClient={copiedClient}
+        onDownloadExtension={() => void saveExtension()}
+        onOpenInstallLink={(client, name) => void openInstallLink(client, name)}
+        onCopySetup={(client) => void copySetup(client)}
+      />
 
       <section className="settings-group">
         <h3 className="settings-group-title">Connected Assistants</h3>

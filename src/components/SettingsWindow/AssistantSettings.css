@@ -27,15 +27,164 @@
   white-space: nowrap;
 }
 
-.assistant-client-actions {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.assistant-compact-button {
+/*
+ * Load order: this file is imported by AssistantSettings.tsx, which SettingsWindow.tsx imports
+ * before SettingsWindow.css. Equal-specificity rules here therefore lose to the shared ones
+ * (e.g. `.settings-action-button { min-width: 160px }`). Every override below is scoped under
+ * `.assistant-settings` so it wins regardless of import order.
+ */
+.assistant-settings .assistant-compact-button {
   min-width: 0;
   white-space: nowrap;
+}
+
+/* Connect an Assistant */
+.assistant-settings .assistant-connect-helper {
+  margin: -2px 2px 0;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assistant-settings .assistant-client-list {
+  container-type: inline-size;
+  container-name: assistant-clients;
+}
+
+/* Narrow default: icon + text on top, actions underneath aligned with the text. */
+.assistant-settings .assistant-client-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-areas:
+    'icon info'
+    '.    actions';
+  align-items: start;
+  column-gap: 12px;
+  row-gap: 10px;
+  padding: 12px 14px;
+}
+
+.assistant-settings .assistant-client-icon {
+  grid-area: icon;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--system-accent-color) 14%, var(--settings-control-bg));
+  color: var(--system-accent-color);
+  font-size: 18px;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.assistant-settings .assistant-client-list.is-access-off .assistant-client-icon {
+  background-color: var(--settings-control-bg);
+  color: var(--settings-text-secondary);
+}
+
+.assistant-settings .assistant-client-info {
+  grid-area: info;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.assistant-settings .assistant-client-name {
+  color: var(--settings-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.assistant-settings .assistant-client-description {
+  margin: 0;
+  color: var(--settings-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.assistant-settings .assistant-client-notice {
+  margin: 4px 0 0;
+  color: var(--settings-text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.assistant-settings .assistant-client-notice:empty {
+  margin: 0;
+}
+
+.assistant-settings .assistant-client-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.assistant-settings .assistant-client-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  background-color: color-mix(in srgb, var(--system-accent-color) 14%, var(--settings-control-bg));
+  border-color: color-mix(in srgb, var(--system-accent-color) 30%, var(--settings-control-border));
+}
+
+.assistant-settings .assistant-client-primary:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--system-accent-color) 22%, var(--settings-control-bg));
+  border-color: color-mix(in srgb, var(--system-accent-color) 45%, var(--settings-control-border));
+}
+
+.assistant-settings .assistant-client-primary svg {
+  flex-shrink: 0;
+  font-size: 15px;
+}
+
+.assistant-settings .assistant-client-secondary,
+.assistant-settings .assistant-client-secondary-slot {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+}
+
+.assistant-settings .assistant-client-secondary {
+  font-size: 15px;
+}
+
+.assistant-settings .assistant-client-secondary-slot {
+  display: none;
+}
+
+.assistant-settings .is-copied .assistant-client-check {
+  color: var(--settings-switch-on);
+}
+
+/* Wide: one line per app, actions in a right-hand column that lines up across rows. */
+@container assistant-clients (min-width: 480px) {
+  .assistant-settings .assistant-client-row {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-areas: 'icon info actions';
+  }
+
+  .assistant-settings .assistant-client-actions {
+    justify-content: flex-end;
+  }
+
+  .assistant-settings .assistant-client-primary {
+    min-width: 168px;
+  }
+
+  .assistant-settings .assistant-client-secondary-slot {
+    display: block;
+  }
 }
 
 .assistant-status-error {
