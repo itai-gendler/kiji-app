@@ -8,7 +8,7 @@ import type { ArticleImageOpenDetail } from '@/components/common/ArticleContent'
 import { keybindingService } from '@/services/shortcuts/shortcutService';
 import './ArticleImageLightbox.css';
 
-/** Above article view (200) and FeedEditView (1000) so article shortcuts never see lightbox keys. */
+/** Above article view (200) and other capture handlers (1000) so article shortcuts never see lightbox keys. */
 const LIGHTBOX_KEY_PRIORITY = 1100;
 
 interface ArticleImageLightboxProps {

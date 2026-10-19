@@ -23,15 +23,20 @@ vi.mock('@/contexts/ThemeContext', () => ({
   }),
 }));
 
-vi.mock('@/contexts/FeedContext', () => ({
-  useFeedNavigation: () => ({
-    openFeedEditView: vi.fn(),
-  }),
-}));
 
 describe('BottomWidget', () => {
   afterEach(() => {
     cleanup();
+  });
+
+  it('opens Manage Feeds in its own window and leaves the main view alone', async () => {
+    const openManageFeeds = vi.fn(async () => {});
+    (window as unknown as { kijiAPI: unknown }).kijiAPI = { openManageFeeds };
+    render(<BottomWidget />);
+    fireEvent.click(screen.getByLabelText(/Manage feeds/));
+    await Promise.resolve();
+    expect(openManageFeeds).toHaveBeenCalledWith(null);
+    delete (window as unknown as { kijiAPI?: unknown }).kijiAPI;
   });
 
   it('hosts SyncIndicator on the settings row without a Feeds title', () => {

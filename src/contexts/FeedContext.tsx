@@ -24,7 +24,7 @@ import {
 } from '@/services/tags/tagFeedIdsCache';
 import type { Article } from '@/types/article';
 import type { ArticleQuery } from '@/types/articleQuery';
-import { FEED_FETCH_COOLDOWN_MS, isLibrarySmartViewId, type SmartViewId } from '@/constants';
+import { FEED_FETCH_COOLDOWN_MS, isLibrarySmartViewId } from '@/constants';
 import { maybeRefreshFavicon } from '@/services/favicons/faviconRefreshService';
 import { getFeedRefreshBlock } from '@/services/feeds/feedRefreshPolicy';
 import type { Feed } from '@/services/feeds/feedsManager';
@@ -32,7 +32,6 @@ import { logger } from '@/services/logger';
 import { debugOnly } from '@/services/system/env';
 import { getE2eConfig, writeE2eEvent } from '@/services/e2e/e2eHarness';
 import { storage } from '@/services/storage/storageFactory';
-import { abortSidebarListDrag } from '@/components/Sidebar/sidebarListDrag';
 import { useDependencyEffect, useMountEffect } from '@/hooks/useLifecycleEffects';
 import { opmlWorkflowService } from '@/services/feeds/opmlWorkflowService';
 import { feedScheduler } from '@/services/scheduler/feedSchedulerService';
@@ -211,11 +210,6 @@ const yieldToArticleListPrefetchFrame = async (): Promise<void> => {
     }
   });
 };
-export type FeedEditTarget =
-  | { kind: 'feed'; id: string }
-  | { kind: 'station'; id: string }
-  | { kind: 'smart-view'; id: SmartViewId };
-
 type SmartViewType = 'saved' | 'pinned' | 'unread' | 'all' | 'read';
 
 const smartViewSourceLabel = (viewType: SmartViewType): string => {
@@ -313,8 +307,6 @@ interface NavigationState {
   selectedFeedTitle: string | null;
   selectedTag: string | null;
   selectedSmartView: SmartViewType | null;
-  isFeedEditView: boolean;
-  feedEditTarget: FeedEditTarget | null;
   navigationNonce: number;
 }
 
@@ -323,9 +315,6 @@ interface NavigationActions {
   selectTag: (tagName: string, options?: RefreshTriggerOptions, feedIdsHint?: string[]) => Promise<void>;
   selectSmartView: (viewType: SmartViewType, options?: RefreshTriggerOptions) => Promise<void>;
   clearFeedSelection: () => void;
-  openFeedEditView: (target?: FeedEditTarget) => void;
-  closeFeedEditView: () => void;
-  clearFeedEditTarget: () => void;
 }
 
 interface CollectionState {
@@ -443,10 +432,7 @@ type NavigationAction =
   | { type: 'NAVIGATE_FEED'; payload: { id: string; title: string } }
   | { type: 'NAVIGATE_TAG'; payload: string }
   | { type: 'NAVIGATE_SMART'; payload: SmartViewType }
-  | { type: 'CLEAR_SELECTION' }
-  | { type: 'OPEN_EDIT_VIEW'; payload: FeedEditTarget | null }
-  | { type: 'CLOSE_EDIT_VIEW' }
-  | { type: 'CLEAR_EDIT_TARGET' };
+  | { type: 'CLEAR_SELECTION' };
 
 function navigationReducer(state: NavigationState, action: NavigationAction): NavigationState {
   switch (action.type) {
@@ -457,7 +443,6 @@ function navigationReducer(state: NavigationState, action: NavigationAction): Na
         selectedFeedTitle: action.payload.title,
         selectedTag: null,
         selectedSmartView: null,
-        isFeedEditView: false,
         navigationNonce: state.navigationNonce + 1,
       };
     case 'NAVIGATE_TAG':
@@ -467,7 +452,6 @@ function navigationReducer(state: NavigationState, action: NavigationAction): Na
         selectedFeedTitle: action.payload,
         selectedTag: action.payload,
         selectedSmartView: null,
-        isFeedEditView: false,
         navigationNonce: state.navigationNonce + 1,
       };
     case 'NAVIGATE_SMART':
@@ -477,17 +461,10 @@ function navigationReducer(state: NavigationState, action: NavigationAction): Na
         selectedFeedTitle: smartViewSourceLabel(action.payload),
         selectedTag: null,
         selectedSmartView: action.payload,
-        isFeedEditView: false,
         navigationNonce: state.navigationNonce + 1,
       };
     case 'CLEAR_SELECTION':
-      return { ...state, selectedFeedId: null, selectedFeedTitle: null, selectedTag: null, selectedSmartView: null, isFeedEditView: false, navigationNonce: state.navigationNonce + 1 };
-    case 'OPEN_EDIT_VIEW':
-      return { ...state, selectedFeedId: null, selectedTag: null, selectedSmartView: null, isFeedEditView: true, feedEditTarget: action.payload, navigationNonce: state.navigationNonce + 1 };
-    case 'CLOSE_EDIT_VIEW':
-      return { ...state, isFeedEditView: false, navigationNonce: state.navigationNonce + 1 };
-    case 'CLEAR_EDIT_TARGET':
-      return { ...state, feedEditTarget: null };
+      return { ...state, selectedFeedId: null, selectedFeedTitle: null, selectedTag: null, selectedSmartView: null, navigationNonce: state.navigationNonce + 1 };
     default:
       return state;
   }
@@ -1014,8 +991,6 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     selectedFeedTitle: null,
     selectedTag: null,
     selectedSmartView: null,
-    isFeedEditView: false,
-    feedEditTarget: null,
     navigationNonce: 0,
   });
   const [collectionState, collectionDispatch] = useReducer(collectionReducer, {
@@ -4236,48 +4211,6 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     })();
   });
 
-  const openFeedEditView = useCallback((target?: FeedEditTarget) => {
-    abortPendingSidebarRestore();
-    abortSidebarListDrag();
-    feedScheduler.clearActiveStationFocus();
-    clearArticleListScrollIdleState();
-    switchLifecycle.invalidate();
-    articleListSearchQueryRef.current = null;
-    articleListSearchRevisionRef.current += 1;
-    advanceVisibleListIntent('idle');
-    settlePendingSearchRequest();
-    cancelActiveSearch();
-    prevNavRef.current = { id: null, tag: null, smart: null };
-    currentArticlesRef.current = [];
-    nonSearchSnapshotRef.current = {
-      sourceKey: null,
-      list: [],
-      total: 0,
-      totalKnown: false,
-      pageWasFull: false,
-      query: null,
-    };
-    loadMorePagingSnapshotRef.current = {
-      length: 0,
-      lastArticle: undefined,
-      articlesTotalCount: 0,
-      articlesTotalKnown: false,
-      pageWasFull: false,
-      isLoadingMoreArticles: false,
-    };
-    navigationDispatch({ type: 'OPEN_EDIT_VIEW', payload: target ?? null });
-    collectionDispatch({ type: 'RESET_ARTICLES' });
-    collectionDispatch({ type: 'SET_LOADING', payload: { isLoadingArticles: false, isSavedListLoading: false, } });
-  }, [advanceVisibleListIntent, cancelActiveSearch, clearArticleListScrollIdleState, settlePendingSearchRequest]);
-
-  const closeFeedEditView = useCallback(() => {
-    navigationDispatch({ type: 'CLOSE_EDIT_VIEW' });
-  }, []);
-
-  const clearFeedEditTarget = useCallback(() => {
-    navigationDispatch({ type: 'CLEAR_EDIT_TARGET' });
-  }, []);
-
   const refreshFeed = useCallback(async () => {
     const source = getRefreshSourceDescriptor(navigationState);
     if (!source) {
@@ -5143,10 +5076,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     selectTag,
     selectSmartView,
     clearFeedSelection,
-    openFeedEditView,
-    closeFeedEditView,
-    clearFeedEditTarget,
-  }), [navigationState, selectFeed, selectTag, selectSmartView, clearFeedSelection, openFeedEditView, closeFeedEditView, clearFeedEditTarget]);
+  }), [navigationState, selectFeed, selectTag, selectSmartView, clearFeedSelection]);
 
   const collectionArticlesValue = useMemo((): CollectionArticlesState => ({
     articles: collectionState.articles,

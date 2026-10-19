@@ -40,6 +40,7 @@ import {
   sidebarIndicatorOngoing,
 } from './services/ui/sidebarIndicatorText';
 import { useApplicationMenuCommands } from './hooks/useApplicationMenuCommands';
+import { useManageFeedsWindowSync } from './hooks/useManageFeedsWindowSync';
 import {
   DECK_SLIDE_EASE,
   APP_LAYER_TRANSITION_MS,
@@ -94,7 +95,6 @@ export const App: React.FC = () => {
   } = useFeedOverlay();
 
   const {
-    openFeedEditView,
     selectedSmartView,
     selectSmartView,
     clearFeedSelection,
@@ -121,10 +121,10 @@ export const App: React.FC = () => {
   useOpmlWorkflowListener();
   useAppShortcuts({
     refreshFeed,
-    openFeedEditView,
     isDeckOpen,
     requestCloseArticle,
   });
+  useManageFeedsWindowSync();
   useApplicationMenuCommands({
     activeArticleHash,
     requestCloseArticle,

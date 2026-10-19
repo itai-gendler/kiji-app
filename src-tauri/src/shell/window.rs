@@ -22,6 +22,8 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, We
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const SETTINGS_WINDOW_LABEL: &str = "settings";
+pub(crate) const MANAGE_FEEDS_WINDOW_LABEL: &str = "manage-feeds";
+const MANAGE_FEEDS_WINDOW_OPEN_EVENT: &str = "manage-feeds-window:open";
 const ARTICLE_WINDOW_LABEL: &str = "article";
 const UPDATE_WINDOW_LABEL: &str = "update";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -55,6 +57,33 @@ impl UpdateWindowState {
         guard
             .clone()
             .ok_or_else(|| "No update payload was provided for the Tauri update window.".to_string())
+    }
+}
+
+/// Row the Manage Feeds window should reveal on open (a feed, station or
+/// library item). One-shot: the window takes it on mount and on every
+/// `manage-feeds-window:open`, so a reopen never replays an old target.
+#[derive(Default)]
+pub struct ManageFeedsWindowState {
+    target: Mutex<Option<JsonValue>>,
+}
+
+impl ManageFeedsWindowState {
+    pub fn set_target(&self, target: Option<JsonValue>) -> Result<(), String> {
+        let mut guard = self
+            .target
+            .lock()
+            .map_err(|_| "Manage feeds window state lock poisoned.".to_string())?;
+        *guard = target;
+        Ok(())
+    }
+
+    pub fn take_target(&self) -> Result<Option<JsonValue>, String> {
+        let mut guard = self
+            .target
+            .lock()
+            .map_err(|_| "Manage feeds window state lock poisoned.".to_string())?;
+        Ok(guard.take())
     }
 }
 
@@ -153,6 +182,10 @@ fn secondary_open_mutex(label: &str) -> &'static AsyncMutex<()> {
             static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
             LOCK.get_or_init(|| AsyncMutex::new(()))
         }
+        MANAGE_FEEDS_WINDOW_LABEL => {
+            static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+            LOCK.get_or_init(|| AsyncMutex::new(()))
+        }
         _ => {
             static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
             LOCK.get_or_init(|| AsyncMutex::new(()))
@@ -219,6 +252,46 @@ pub async fn shell_settings_window_open(app: AppHandle) -> Result<(), String> {
     with_secondary_window_open_lock(SETTINGS_WINDOW_LABEL, || open_settings_window(&app)).await
 }
 
+/// Open (or focus) Manage Feeds. `target` names the row to reveal; the
+/// window reads it with `shell_manage_feeds_window_take_target`.
+pub fn open_manage_feeds_window(app: &AppHandle, target: Option<JsonValue>) -> Result<(), String> {
+    app.state::<Arc<ManageFeedsWindowState>>().set_target(target)?;
+    open_secondary_window(app, MANAGE_FEEDS_WINDOW_LABEL)?;
+    // A window that is already loaded never remounts, so tell it to take the
+    // new target. A first open loads afterwards and takes it on mount.
+    if let Err(error) =
+        emit_secondary_window_open(app, MANAGE_FEEDS_WINDOW_LABEL, MANAGE_FEEDS_WINDOW_OPEN_EVENT)
+    {
+        eprintln!("[KiJi] Failed to emit {MANAGE_FEEDS_WINDOW_OPEN_EVENT}: {error}");
+    }
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn shell_manage_feeds_window_open(
+    app: AppHandle,
+    target: Option<JsonValue>,
+) -> Result<(), String> {
+    with_secondary_window_open_lock(MANAGE_FEEDS_WINDOW_LABEL, || {
+        open_manage_feeds_window(&app, target)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn shell_manage_feeds_window_take_target(
+    window: WebviewWindow,
+    state: State<'_, Arc<ManageFeedsWindowState>>,
+) -> Result<Option<JsonValue>, String> {
+    if window.label() != MANAGE_FEEDS_WINDOW_LABEL {
+        return Err(format!(
+            "Manage feeds target can only be read from the manage-feeds webview (got {}).",
+            window.label()
+        ));
+    }
+    state.take_target()
+}
+
 /// Hide/show native Overlay traffic lights (close / miniaturize / zoom).
 ///
 /// This is AppKit `NSView::setHidden` on the three standard window buttons —
@@ -259,7 +332,7 @@ static TRAFFIC_LIGHT_INSET_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn overlay_traffic_light_inset_for_label(label: &str) -> (f64, f64) {
     match label {
-        "settings" | "update" => (16.0, 20.0),
+        "settings" | "update" | MANAGE_FEEDS_WINDOW_LABEL => (16.0, 20.0),
         _ => (16.0, 22.0),
     }
 }
@@ -661,11 +734,68 @@ mod tests {
     }
 
     #[test]
+    fn manage_feeds_target_is_taken_once() {
+        let state = ManageFeedsWindowState::default();
+        assert_eq!(state.take_target().unwrap(), None);
+
+        state
+            .set_target(Some(json!({ "kind": "feed", "id": "feed-1" })))
+            .expect("target should store");
+        assert_eq!(state.take_target().unwrap().unwrap()["id"], "feed-1");
+        assert_eq!(state.take_target().unwrap(), None, "a reopen must not replay the old target");
+
+        state
+            .set_target(Some(json!({ "kind": "station", "id": "News" })))
+            .expect("target should store");
+        state.set_target(None).expect("plain open clears the target");
+        assert_eq!(state.take_target().unwrap(), None);
+    }
+
+    #[test]
+    fn manage_feeds_window_matches_secondary_window_contract() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../../tauri.conf.json")).expect("tauri.conf.json");
+        let window = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == MANAGE_FEEDS_WINDOW_LABEL))
+            .expect("manage-feeds window config");
+        assert_eq!(window["create"], false, "created on demand, like Settings");
+        assert_eq!(window["url"], "index.html?window=manage-feeds");
+        assert_eq!(window["visible"], false);
+        assert_eq!(window["dragDropEnabled"], false, "row drag-and-drop needs HTML5 DnD");
+
+        let capabilities: serde_json::Value =
+            serde_json::from_str(include_str!("../../capabilities/default.json")).expect("capabilities");
+        assert!(capabilities["windows"]
+            .as_array()
+            .expect("capability windows")
+            .iter()
+            .any(|label| label == MANAGE_FEEDS_WINDOW_LABEL));
+
+        let production = include_str!("window.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(production.contains("pub async fn shell_manage_feeds_window_open"));
+        let open_fn = production
+            .split("pub fn open_manage_feeds_window")
+            .nth(1)
+            .unwrap_or("");
+        let before_show = open_fn.split("open_secondary_window").next().unwrap_or("");
+        assert!(
+            before_show.contains("set_target"),
+            "store the target before show so a first open can take it on mount"
+        );
+        assert!(open_fn.contains("emit_secondary_window_open"));
+    }
+
+    #[test]
     fn overlay_traffic_light_insets_match_macos_window_config() {
         assert_eq!(overlay_traffic_light_inset_for_label("main"), (16.0, 22.0));
         assert_eq!(overlay_traffic_light_inset_for_label("article"), (16.0, 22.0));
         assert_eq!(overlay_traffic_light_inset_for_label("settings"), (16.0, 20.0));
         assert_eq!(overlay_traffic_light_inset_for_label("update"), (16.0, 20.0));
+        assert_eq!(overlay_traffic_light_inset_for_label("manage-feeds"), (16.0, 20.0));
     }
 
     #[test]

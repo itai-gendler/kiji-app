@@ -5,11 +5,11 @@ import BrightnessAutoIcon from '@mui/icons-material/BrightnessAuto';
 import LightModeIcon from '@mui/icons-material/LightMode';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import { TOOLTIPS } from '@/config/tooltips';
-import { useFeedNavigation } from '@/contexts/FeedContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { Theme } from '@/services/settings';
 import { SHORTCUT_LABELS, withShortcutHint } from '@/services/shortcuts/shortcutService';
 import { ButtonStack, type ButtonConfig } from '@/components/common/ButtonStack';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
 import { openSettingsWindow } from '@/services/ui/openSettingsWindow';
 import './BottomWidget.css';
 
@@ -22,7 +22,6 @@ export interface BottomWidgetProps {
 
 export const BottomWidget: React.FC<BottomWidgetProps> = ({ children }) => {
   const { theme, setTheme } = useTheme();
-  const { openFeedEditView } = useFeedNavigation();
   const themeIconMap = {
     auto: BrightnessAutoIcon,
     light: LightModeIcon,
@@ -63,7 +62,7 @@ export const BottomWidget: React.FC<BottomWidgetProps> = ({ children }) => {
       icon: RssFeedIcon,
       label: editFeedsTooltip,
       onClick: () => {
-        openFeedEditView();
+        void openManageFeedsWindow();
       },
     },
   ];

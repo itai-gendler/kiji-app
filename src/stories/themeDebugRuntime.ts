@@ -28,16 +28,11 @@ const baseNavigation = {
   selectedFeedTitle: 'Design Systems Weekly',
   selectedTag: null,
   selectedSmartView: null,
-  isFeedEditView: false,
-  feedEditTarget: null,
   navigationNonce: 1,
   selectFeed: asyncNoop,
   selectTag: asyncNoop,
   selectSmartView: asyncNoop,
   clearFeedSelection: noop,
-  openFeedEditView: noop,
-  closeFeedEditView: noop,
-  clearFeedEditTarget: noop,
 };
 
 const baseCollectionActions = {

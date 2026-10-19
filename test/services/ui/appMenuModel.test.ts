@@ -20,6 +20,17 @@ describe('appMenuModel', () => {
     expect(tree[0]?.accessKey).toBe('k');
   });
 
+  it('lists Manage Feeds under Subscriptions with its shortcut', () => {
+    const tree = buildWindowsAppMenuTree({ theme: 'auto', libraryView: null });
+    const subscriptions = tree.find((menu) => menu.id === 'subscriptions');
+    const manage = subscriptions?.items.find((item) => item.kind === 'item' && item.id === 'manage-feeds');
+    expect(manage).toMatchObject({
+      label: 'Manage Feeds...',
+      action: { type: 'openManageFeeds' },
+      shortcutHint: 'Ctrl+E',
+    });
+  });
+
   it('marks theme and library check items from state', () => {
     const tree = buildWindowsAppMenuTree({ theme: 'dark', libraryView: 'unread' });
     const view = tree.find((menu) => menu.id === 'view');

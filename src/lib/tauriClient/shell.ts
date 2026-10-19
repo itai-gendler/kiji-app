@@ -5,6 +5,28 @@ export async function openSettings(): Promise<ShellContract["openSettings"]["res
   return invokeContract<ShellContract["openSettings"]>("shell_settings_window_open");
 }
 
+export async function openManageFeeds(
+  target: ShellContract["openManageFeeds"]["request"]["target"],
+): Promise<ShellContract["openManageFeeds"]["response"]> {
+  return invokeCommand<ShellContract["openManageFeeds"]["response"]>(
+    "shell_manage_feeds_window_open",
+    { target },
+  );
+}
+
+export async function takeManageFeedsTarget(): Promise<ShellContract["takeManageFeedsTarget"]["response"]> {
+  return invokeContract<ShellContract["takeManageFeedsTarget"]>("shell_manage_feeds_window_take_target");
+}
+
+export async function runMainWindowCommand(
+  command: ShellContract["runMainWindowCommand"]["request"]["command"],
+): Promise<ShellContract["runMainWindowCommand"]["response"]> {
+  return invokeCommand<ShellContract["runMainWindowCommand"]["response"]>(
+    "shell_main_window_command",
+    { command },
+  );
+}
+
 export async function setTrafficLightsVisible(
   visible: ShellContract["setTrafficLightsVisible"]["request"]["visible"],
 ): Promise<ShellContract["setTrafficLightsVisible"]["response"]> {

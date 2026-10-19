@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "settings", "article", "update"],
+  "windows": ["main", "settings", "manage-feeds", "article", "update"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -19,6 +19,7 @@
     "core:window:allow-outer-size",
     "core:window:allow-outer-position",
     "core:window:allow-hide",
+    "core:window:allow-set-title",
     "opener:default"
   ]
 }

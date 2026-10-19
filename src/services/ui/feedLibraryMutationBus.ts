@@ -72,8 +72,39 @@ export interface FeedLibraryUnstationedHydrated {
   feeds: Feed[];
 }
 
+/**
+ * One bus publish, as a plain value. The window bridge relays these between the main
+ * window and Manage Feeds (separate webviews, separate bus instances).
+ */
+export type FeedLibraryMutationMessage =
+  | { kind: 'feedPatched'; feedId: string; changes: FeedLibraryFeedPatchChanges }
+  | { kind: 'stationPatched'; previousName: string; station: FeedLibraryStationPatched['station'] }
+  | { kind: 'feedDeleted'; feedId: string }
+  | { kind: 'feedsAdded'; feeds: Feed[] }
+  | { kind: 'smartViewsPatched'; smartViews: SmartViewSettings[] }
+  | { kind: 'stationsReordered'; stations: FeedLibraryStationsReordered['stations'] }
+  | { kind: 'stationDeleted'; stationName: string; affectedFeedIds: string[] }
+  | {
+    kind: 'feedsCountsUpdated';
+    feeds: Array<{ feedId: string; unreadCount: number; articleCount: number }>;
+  }
+  | { kind: 'stationsHydrated'; stations: Tag[] }
+  | { kind: 'unstationedReordered'; feeds: FeedLibraryUnstationedReordered['feeds'] }
+  | { kind: 'stationMembershipReordered'; stationName: string; feedIds: string[] }
+  | { kind: 'unstationedHydrated'; feeds: Feed[] }
+  | { kind: 'libraryHydrated'; stations: Tag[]; unstationed: Feed[] };
+
+type OutboundRelay = (message: FeedLibraryMutationMessage) => void;
+type MessageListener = (message: FeedLibraryMutationMessage, origin: 'local' | 'remote') => void;
+
 class FeedLibraryMutationBus {
   private readonly listeners = new Set<Listener>();
+
+  private readonly messageListeners = new Set<MessageListener>();
+
+  private outboundRelay: OutboundRelay | null = null;
+
+  private applyingRemote = false;
 
   private revision = 0;
 
@@ -100,6 +131,18 @@ class FeedLibraryMutationBus {
   private stationMembershipReordered: FeedLibraryStationMembershipReordered | null = null;
 
   private unstationedHydrated: FeedLibraryUnstationedHydrated | null = null;
+
+  /**
+   * Every publish, in order, as a message. Snapshot subscribers (`subscribe` + getters) only
+   * see the latest value per kind, so a burst of same-kind publishes (bulk delete) collapses;
+   * list owners that must apply each one use this instead.
+   */
+  subscribeMessages = (listener: MessageListener): (() => void) => {
+    this.messageListeners.add(listener);
+    return () => {
+      this.messageListeners.delete(listener);
+    };
+  };
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
@@ -193,6 +236,7 @@ class FeedLibraryMutationBus {
       changes,
     };
     this.emit();
+    this.dispatch({ kind: 'feedPatched', feedId, changes });
   }
 
   publishStationPatched(
@@ -206,6 +250,7 @@ class FeedLibraryMutationBus {
       station,
     };
     this.emit();
+    this.dispatch({ kind: 'stationPatched', previousName, station });
   }
 
   publishFeedDeleted(feedId: string): void {
@@ -215,6 +260,7 @@ class FeedLibraryMutationBus {
       feedId,
     };
     this.emit();
+    this.dispatch({ kind: 'feedDeleted', feedId });
   }
 
   publishFeedsAdded(feeds: Feed[]): void {
@@ -226,6 +272,7 @@ class FeedLibraryMutationBus {
       feeds,
     };
     this.emit();
+    this.dispatch({ kind: 'feedsAdded', feeds });
   }
 
   publishSmartViewsPatched(smartViews: SmartViewSettings[]): void {
@@ -235,6 +282,7 @@ class FeedLibraryMutationBus {
       smartViews,
     };
     this.emit();
+    this.dispatch({ kind: 'smartViewsPatched', smartViews });
   }
 
   publishStationsReordered(stations: FeedLibraryStationsReordered['stations']): void {
@@ -244,6 +292,7 @@ class FeedLibraryMutationBus {
       stations,
     };
     this.emit();
+    this.dispatch({ kind: 'stationsReordered', stations });
   }
 
   publishStationDeleted(stationName: string, affectedFeedIds: string[] = []): void {
@@ -254,6 +303,7 @@ class FeedLibraryMutationBus {
       affectedFeedIds,
     };
     this.emit();
+    this.dispatch({ kind: 'stationDeleted', stationName, affectedFeedIds });
   }
 
   publishFeedsCountsUpdated(
@@ -273,6 +323,7 @@ class FeedLibraryMutationBus {
       })),
     };
     this.emit();
+    this.dispatch({ kind: 'feedsCountsUpdated', feeds });
   }
 
   publishStationsHydrated(stations: Tag[]): void {
@@ -282,6 +333,7 @@ class FeedLibraryMutationBus {
       stations,
     };
     this.emit();
+    this.dispatch({ kind: 'stationsHydrated', stations });
   }
 
   publishUnstationedReordered(feeds: FeedLibraryUnstationedReordered['feeds']): void {
@@ -291,6 +343,7 @@ class FeedLibraryMutationBus {
       feeds,
     };
     this.emit();
+    this.dispatch({ kind: 'unstationedReordered', feeds });
   }
 
   publishStationMembershipReordered(
@@ -302,6 +355,7 @@ class FeedLibraryMutationBus {
       ...payload,
     };
     this.emit();
+    this.dispatch({ kind: 'stationMembershipReordered', ...payload });
   }
 
   publishUnstationedHydrated(feeds: Feed[]): void {
@@ -311,6 +365,7 @@ class FeedLibraryMutationBus {
       feeds,
     };
     this.emit();
+    this.dispatch({ kind: 'unstationedHydrated', feeds });
   }
 
   resetForTests(): void {
@@ -341,6 +396,82 @@ class FeedLibraryMutationBus {
       feeds: payload.unstationed,
     };
     this.emit();
+    this.dispatch({ kind: 'libraryHydrated', stations: payload.stations, unstationed: payload.unstationed });
+  }
+
+  /** Send every local publish to `relay` (the window bridge); null stops relaying. */
+  setOutboundRelay(relay: OutboundRelay | null): void {
+    this.outboundRelay = relay;
+  }
+
+  getOutboundRelay(): OutboundRelay | null {
+    return this.outboundRelay;
+  }
+
+  /** Publish a mutation that another window already persisted, without relaying it back. */
+  applyRemote(message: FeedLibraryMutationMessage): void {
+    this.applyingRemote = true;
+    try {
+      switch (message.kind) {
+        case 'feedPatched':
+          this.publishFeedPatched(message.feedId, message.changes);
+          return;
+        case 'stationPatched':
+          this.publishStationPatched(message.previousName, message.station);
+          return;
+        case 'feedDeleted':
+          this.publishFeedDeleted(message.feedId);
+          return;
+        case 'feedsAdded':
+          this.publishFeedsAdded(message.feeds);
+          return;
+        case 'smartViewsPatched':
+          this.publishSmartViewsPatched(message.smartViews);
+          return;
+        case 'stationsReordered':
+          this.publishStationsReordered(message.stations);
+          return;
+        case 'stationDeleted':
+          this.publishStationDeleted(message.stationName, message.affectedFeedIds);
+          return;
+        case 'feedsCountsUpdated':
+          this.publishFeedsCountsUpdated(message.feeds);
+          return;
+        case 'stationsHydrated':
+          this.publishStationsHydrated(message.stations);
+          return;
+        case 'unstationedReordered':
+          this.publishUnstationedReordered(message.feeds);
+          return;
+        case 'stationMembershipReordered':
+          this.publishStationMembershipReordered({
+            stationName: message.stationName,
+            feedIds: message.feedIds,
+          });
+          return;
+        case 'unstationedHydrated':
+          this.publishUnstationedHydrated(message.feeds);
+          return;
+        case 'libraryHydrated':
+          this.publishLibraryHydrated({ stations: message.stations, unstationed: message.unstationed });
+          return;
+        default:
+          return;
+      }
+    } finally {
+      this.applyingRemote = false;
+    }
+  }
+
+  private dispatch(message: FeedLibraryMutationMessage): void {
+    const origin = this.applyingRemote ? 'remote' : 'local';
+    for (const listener of this.messageListeners) {
+      listener(message, origin);
+    }
+    if (origin === 'remote' || !this.outboundRelay) {
+      return;
+    }
+    this.outboundRelay(message);
   }
 
   private emit(): void {

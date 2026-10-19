@@ -23,6 +23,7 @@ import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
 import { AddFeedModal } from './AddFeedModal';
 import { TagEditModal } from './TagEditModal';
 import { useFeedFaviconRefreshed, useFeedNavigation, useFeedUIActions } from '@/contexts/FeedContext';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
 import { ButtonStack, type ButtonConfig } from '@/components/common/ButtonStack';
 import { Modal } from '@/components/common/Modal';
 import { FaviconImage } from '@/components/common/FaviconImage';
@@ -132,7 +133,7 @@ export const FeedList: React.FC<FeedListProps> = ({ showAddModal, onCloseAddModa
   const lastAppliedUnstationedHydrateRevision = useRef(0);
   const [tagEditFeedId, setTagEditFeedId] = useState<string | null>(null);
   const [feedToDelete, setFeedToDelete] = useState<{ id: string; title: string } | null>(null);
-  const { selectedFeedId, selectFeed, clearFeedSelection, openFeedEditView } = useFeedNavigation();
+  const { selectedFeedId, selectFeed, clearFeedSelection } = useFeedNavigation();
   const { refreshTotalFeeds } = useFeedUIActions();
   const feedFaviconRefreshed = useFeedFaviconRefreshed();
   const patchedFeed = useFeedPatchedMutation();
@@ -174,8 +175,8 @@ export const FeedList: React.FC<FeedListProps> = ({ showAddModal, onCloseAddModa
   }, [selectFeed]);
 
   const handleOpenFeedEdit = useCallback((feedId: string) => {
-    openFeedEditView({ kind: 'feed', id: feedId });
-  }, [openFeedEditView]);
+    void openManageFeedsWindow({ kind: 'feed', id: feedId });
+  }, []);
 
   const {
     setRowRef,

@@ -48,6 +48,26 @@
         }
       },
       {
+        "label": "manage-feeds",
+        "create": false,
+        "title": "KiJi Feeds",
+        "url": "index.html?window=manage-feeds",
+        "width": 880,
+        "height": 640,
+        "minWidth": 660,
+        "minHeight": 460,
+        "visible": false,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "dragDropEnabled": false,
+        "windowEffects": {
+          "effects": ["mica", "acrylic", "sidebar"],
+          "state": "active",
+          "radius": 14
+        }
+      },
+      {
         "label": "article",
         "create": false,
         "title": "KiJi Article",

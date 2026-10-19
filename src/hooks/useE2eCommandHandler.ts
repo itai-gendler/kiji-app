@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { getCurrentWindow, Window } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import {
   useFeedCollectionActions,
   useFeedCollectionArticles,
@@ -19,6 +20,8 @@ import { readE2eTextFile, takeE2eCommand, writeE2eHarnessText } from '@/services
 import { getE2eConfig, waitForE2eConfig, writeE2eEvent } from '@/services/e2e/e2eHarness';
 import { tagsManager } from '@/services/tags/tagsManager';
 import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
+import type { ManageFeedsTarget } from '@/types/manageFeeds';
 import { openSettingsWindow } from '@/services/ui/openSettingsWindow';
 import { isMainRendererWindow } from '@/utils/rendererWindow';
 import { logger } from '@/services/logger';
@@ -137,10 +140,6 @@ export const useE2eCommandHandler = (): void => {
     };
 
     const runRenameStation = async (from: string, to: string): Promise<void> => {
-      const { openFeedEditView } = navigationRef.current;
-
-      await openFeedEditView();
-      await writeE2eEvent('feed-edit-opened', { isFeedEditView: true });
       const stations = await tagsManager.getAllTags();
       const previousStation = stations.find((station) => station.name === from);
       await tagsManager.renameTag(from, to);
@@ -178,8 +177,6 @@ export const useE2eCommandHandler = (): void => {
         selectFeed,
         selectTag,
         selectSmartView,
-        openFeedEditView,
-        closeFeedEditView,
         selectedTag,
         selectedFeedId,
       } = navigationRef.current;
@@ -300,13 +297,15 @@ export const useE2eCommandHandler = (): void => {
           return;
         }
         case 'open-feed-edit': {
-          openFeedEditView();
-          await writeE2eEvent('feed-edit-opened', { isFeedEditView: true });
+          const target = command.payload?.target as ManageFeedsTarget | undefined;
+          await openManageFeedsWindow(target);
+          await writeE2eEvent('feed-edit-opened', { window: 'manage-feeds', target: target ?? null });
           return;
         }
         case 'close-feed-edit': {
-          closeFeedEditView();
-          await writeE2eEvent('feed-edit-closed', { isFeedEditView: false });
+          const manageFeedsWindow = await WebviewWindow.getByLabel('manage-feeds');
+          await manageFeedsWindow?.close();
+          await writeE2eEvent('feed-edit-closed', { window: 'manage-feeds' });
           return;
         }
         case 'rename-station': {

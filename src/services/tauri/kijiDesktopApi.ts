@@ -124,6 +124,15 @@ function installKijiDesktopApi(): void {
     async openSettings() {
       await tauriClient.shell.openSettings();
     },
+    async openManageFeeds(target) {
+      await tauriClient.shell.openManageFeeds(target ?? null);
+    },
+    async takeManageFeedsTarget() {
+      return tauriClient.shell.takeManageFeedsTarget();
+    },
+    async runMainWindowCommand(command) {
+      await tauriClient.shell.runMainWindowCommand(command);
+    },
     async confirmDialog(request) {
       return tauriClient.shell.confirmDialog(request);
     },

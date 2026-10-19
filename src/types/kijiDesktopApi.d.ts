@@ -1,6 +1,7 @@
 import type { Article } from '@/types/article';
 import type { LogEntryInput } from '@/services/logger';
 import type { AppMenuCommand, AppMenuState } from '@/types/appMenu';
+import type { ManageFeedsTarget } from '@/types/manageFeeds';
 import type {
   SavedArticlesExportEvent,
   SavedArticlesExportPreflight,
@@ -35,6 +36,9 @@ export interface KijiDesktopAPI {
   hideTrafficLights: () => Promise<void>;
   showTrafficLights: () => Promise<void>;
   openSettings: () => Promise<void>;
+  openManageFeeds: (target?: ManageFeedsTarget | null) => Promise<void>;
+  takeManageFeedsTarget: () => Promise<ManageFeedsTarget | null>;
+  runMainWindowCommand: (command: AppMenuCommand) => Promise<void>;
   confirmDialog: (request: { title?: string; message: string }) => Promise<boolean>;
   updateAppMenuState: (state: Partial<AppMenuState>) => Promise<void>;
   onAppMenuCommand: (callback: (command: AppMenuCommand) => void) => () => void;

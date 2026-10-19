@@ -3,6 +3,7 @@ import type { AppMenuCommand, AppMenuState } from '@/types/appMenu';
 
 export type AppMenuLocalAction =
   | { type: 'openSettings' }
+  | { type: 'openManageFeeds' }
   | { type: 'about' }
   | { type: 'quit' }
   | { type: 'helpSupport' }
@@ -205,6 +206,14 @@ export function buildWindowsAppMenuTree(state: AppMenuState): AppMenuTopLevel[] 
           id: 'import-feeds',
           label: 'Import Feeds',
           action: { type: 'importFeeds' },
+        },
+        { kind: 'separator', id: 'subscriptions-sep-manage' },
+        {
+          kind: 'item',
+          id: 'manage-feeds',
+          label: 'Manage Feeds...',
+          action: { type: 'openManageFeeds' },
+          shortcutHint: 'Ctrl+E',
         },
       ],
     },
