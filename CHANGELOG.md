@@ -2,10 +2,18 @@
 
 ## Unreleased
 
+## [1.7.0] - 2026-10-19
+
 ### Added
 
 - New **Assistant** tab in Settings lets AI apps such as Claude, Cursor, VS Code and Codex read your KiJi library — including the article you're reading right now — so you can ask them to explain an article, summarize a station's week, or search your feeds. It's off until you turn it on, read-only, and you choose which stations, saved articles and notes are shared. One click adds KiJi to Claude Desktop, Cursor or VS Code.
 - You can also let assistants make changes for you: mark articles read or unread, star them, or save them to Saved when you ask. This has its own switch in Settings → Assistant, is off until you turn it on, and the article list, unread counts and Saved update right away.
+- New **Manage Feeds** window keeps your feeds, stations, Library views, and import and export in one place, with tabs along the top like a Mac settings window. Lists show each feed's icon, site, counts and status, and you can select several feeds to change them together.
+
+### Changed
+
+- Adding a feed is simpler: paste a link and KiJi shows the feed — its title, site and latest articles — before you add it, or tells you if you already follow it. Importing a feed list or saved articles has its own tab.
+- Settings has a cleaner, more Mac-like look, with a slimmer sidebar and new icons.
 
 ### Fixed
 
