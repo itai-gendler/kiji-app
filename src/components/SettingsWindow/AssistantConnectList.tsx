@@ -1,15 +1,18 @@
 import React from 'react';
-import AppsOutlinedIcon from '@mui/icons-material/AppsOutlined';
-import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
-import CodeOutlinedIcon from '@mui/icons-material/CodeOutlined';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import DataObjectOutlinedIcon from '@mui/icons-material/DataObjectOutlined';
-import DesktopMacOutlinedIcon from '@mui/icons-material/DesktopMacOutlined';
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import TerminalOutlinedIcon from '@mui/icons-material/TerminalOutlined';
-import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import type { AssistantClientId } from '@/lib/tauriClient/assistant';
+import {
+  BracesGlyph,
+  CheckGlyph,
+  CodeGlyph,
+  CopyGlyph,
+  DesktopGlyph,
+  DownloadGlyph,
+  GridGlyph,
+  OpenExternalGlyph,
+  SlidersGlyph,
+  TerminalGlyph,
+  type SettingsGlyphProps,
+} from './settingsIcons';
 
 type PrimaryAction = 'extension' | 'install' | 'copy';
 
@@ -22,7 +25,7 @@ export interface AssistantClientRow {
   copiedHint: string;
   primary: PrimaryAction;
   primaryLabel: string;
-  Icon: typeof AppsOutlinedIcon;
+  Icon: React.FC<SettingsGlyphProps>;
 }
 
 export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
@@ -33,7 +36,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: "Paste it into Claude's developer settings, then restart Claude.",
     primary: 'extension',
     primaryLabel: 'Download Extension',
-    Icon: DesktopMacOutlinedIcon,
+    Icon: DesktopGlyph,
   },
   {
     id: 'claude-code',
@@ -42,7 +45,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: 'Paste it in Terminal and press Return.',
     primary: 'copy',
     primaryLabel: 'Copy Command',
-    Icon: TerminalOutlinedIcon,
+    Icon: TerminalGlyph,
   },
   {
     id: 'cursor',
@@ -51,7 +54,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: "Paste it into Cursor's tool settings.",
     primary: 'install',
     primaryLabel: 'Add to Cursor',
-    Icon: CodeOutlinedIcon,
+    Icon: CodeGlyph,
   },
   {
     id: 'vscode',
@@ -60,7 +63,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: "Paste it into VS Code's tool settings.",
     primary: 'install',
     primaryLabel: 'Add to VS Code',
-    Icon: DataObjectOutlinedIcon,
+    Icon: BracesGlyph,
   },
   {
     id: 'codex',
@@ -69,7 +72,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: "Paste it into Codex's settings file.",
     primary: 'copy',
     primaryLabel: 'Copy Setup',
-    Icon: TuneOutlinedIcon,
+    Icon: SlidersGlyph,
   },
   {
     id: 'command',
@@ -78,7 +81,7 @@ export const ASSISTANT_CLIENT_ROWS: AssistantClientRow[] = [
     copiedHint: 'Use it in any assistant app that can run a local tool.',
     primary: 'copy',
     primaryLabel: 'Copy Command',
-    Icon: AppsOutlinedIcon,
+    Icon: GridGlyph,
   },
 ];
 
@@ -125,9 +128,9 @@ export const AssistantConnectList: React.FC<AssistantConnectListProps> = ({
         const rowNotice = noticeFor(row, notice);
         const { Icon } = row;
         const copyIcon = copied ? (
-          <CheckRoundedIcon className="assistant-client-check" fontSize="inherit" />
+          <CheckGlyph className="assistant-client-check" />
         ) : (
-          <ContentCopyRoundedIcon fontSize="inherit" />
+          <CopyGlyph />
         );
 
         const primaryButton = (() => {
@@ -139,7 +142,7 @@ export const AssistantConnectList: React.FC<AssistantConnectListProps> = ({
                   className="settings-action-button assistant-compact-button assistant-client-primary"
                   onClick={onDownloadExtension}
                 >
-                  <FileDownloadOutlinedIcon fontSize="inherit" />
+                  <DownloadGlyph />
                   <span>{row.primaryLabel}</span>
                 </button>
               );
@@ -150,7 +153,7 @@ export const AssistantConnectList: React.FC<AssistantConnectListProps> = ({
                   className="settings-action-button assistant-compact-button assistant-client-primary"
                   onClick={() => onOpenInstallLink(row.id, row.name)}
                 >
-                  <OpenInNewRoundedIcon fontSize="inherit" />
+                  <OpenExternalGlyph />
                   <span>{row.primaryLabel}</span>
                 </button>
               );
@@ -171,7 +174,7 @@ export const AssistantConnectList: React.FC<AssistantConnectListProps> = ({
         return (
           <div key={row.id} className="settings-item assistant-client-row" data-client={row.id}>
             <span className="assistant-client-icon" aria-hidden="true">
-              <Icon fontSize="inherit" />
+              <Icon />
             </span>
             <div className="assistant-client-info">
               <span className="assistant-client-name">{row.name}</span>
