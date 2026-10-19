@@ -15,6 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 const REPLAY_INITIALIZE_ID: &str = "kiji-bridge-replay-initialize";
+/// How long the bridge waits for in-flight answers after stdin closes.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Ids of messages the bridge itself sends on reconnect; their responses are
 /// dropped.
 const REPLAY_ID_PREFIX: &str = "kiji-bridge-replay";
@@ -151,6 +153,17 @@ where
         }
     }
 
+    // Input closed: give requests already sent to KiJi a moment to answer
+    // (e.g. `printf … | kiji-app --mcp`), then exit.
+    if upstream.is_some() {
+        let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+        while tokio::time::Instant::now() < deadline
+            && upstream.as_ref().map(|up| up.alive.load(std::sync::atomic::Ordering::Acquire)).unwrap_or(false)
+            && pending.lock().map(|set| !set.is_empty()).unwrap_or(false)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
     drop(upstream);
     drop(out_tx);
     let _ = writer.await;
@@ -312,6 +325,44 @@ mod tests {
             line.clear();
         }
         responses
+    }
+
+    #[tokio::test]
+    async fn answers_already_sent_requests_after_stdin_closes() {
+        // Fake KiJi that answers after a short delay.
+        let (bridge_side, kiji_side) = duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (read_half, mut write_half) = tokio::io::split(kiji_side);
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                let message: Value = serde_json::from_str(line.trim()).unwrap();
+                if let Some(id) = message.get("id") {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let reply = json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+                    let _ = write_half.write_all(format!("{reply}\n").as_bytes()).await;
+                }
+                line.clear();
+            }
+        });
+        let socket = Arc::new(Mutex::new(Some(bridge_side)));
+        let connect = move || {
+            let socket = Arc::clone(&socket);
+            async move {
+                let stream = socket.lock().unwrap().take()?;
+                let (reader, writer) = tokio::io::split(stream);
+                Some((Box::new(reader) as BoxedReader, Box::new(writer) as BoxedWriter))
+            }
+        };
+        let (mut client_in, bridge_in) = duplex(64 * 1024);
+        let (bridge_out, client_out) = duplex(64 * 1024);
+        client_in.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n").await.unwrap();
+        drop(client_in);
+        bridge_main(bridge_in, bridge_out, connect).await;
+        let mut line = String::new();
+        BufReader::new(client_out).read_line(&mut line).await.unwrap();
+        let reply: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(reply["id"], 9);
     }
 
     #[tokio::test]
