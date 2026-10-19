@@ -144,16 +144,29 @@ pub async fn articles_update_read(
     state: State<'_, DbState>,
 ) -> Result<(), String> {
     let db = state.inner().clone();
-    db.write(move |connection| {
-        connection
-            .execute(
-                "UPDATE articles SET read = ?1 WHERE hash = ?2",
-                params![bool_to_i64(read), hash],
-            )
-            .map(|_| ())
-            .map_err(|error| format!("Failed to update article read status: {error}"))
-    })
-    .await
+    db.write(move |connection| update_article_read(connection, &hash, read).map(|_| ()))
+        .await
+}
+
+/// Sets `articles.read`; returns rows changed. Shared by the command and
+/// assistant writes so there is one writer for the field.
+pub(crate) fn update_article_read(connection: &Connection, hash: &str, read: bool) -> Result<usize, String> {
+    connection
+        .execute(
+            "UPDATE articles SET read = ?1 WHERE hash = ?2",
+            params![bool_to_i64(read), hash],
+        )
+        .map_err(|error| format!("Failed to update article read status: {error}"))
+}
+
+/// Sets `articles.starred` to an explicit value (the toggle command flips it).
+pub(crate) fn set_article_starred(connection: &Connection, hash: &str, starred: bool) -> Result<usize, String> {
+    connection
+        .execute(
+            "UPDATE articles SET starred = ?1 WHERE hash = ?2",
+            params![bool_to_i64(starred), hash],
+        )
+        .map_err(|error| format!("Failed to update article starred state: {error}"))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -203,15 +216,23 @@ pub async fn articles_update_saved_state(
 ) -> Result<(), String> {
     let db = state.inner().clone();
     db.write(move |connection| {
-        connection
-            .execute(
-                "UPDATE articles SET saved = ?1, saved_article_id = ?2 WHERE hash = ?3",
-                params![bool_to_i64(saved), saved_article_id, hash],
-            )
-            .map(|_| ())
-            .map_err(|error| format!("Failed to update article saved state: {error}"))
+        update_article_saved_state(connection, &hash, saved, saved_article_id.as_deref()).map(|_| ())
     })
     .await
+}
+
+pub(crate) fn update_article_saved_state(
+    connection: &Connection,
+    hash: &str,
+    saved: bool,
+    saved_article_id: Option<&str>,
+) -> Result<usize, String> {
+    connection
+        .execute(
+            "UPDATE articles SET saved = ?1, saved_article_id = ?2 WHERE hash = ?3",
+            params![bool_to_i64(saved), saved_article_id, hash],
+        )
+        .map_err(|error| format!("Failed to update article saved state: {error}"))
 }
 
 #[tauri::command(rename_all = "camelCase")]

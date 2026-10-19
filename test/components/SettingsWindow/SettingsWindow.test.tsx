@@ -301,6 +301,13 @@ describe("SettingsWindow", () => {
     });
   });
 
+  it("places the Assistant tab between Shortcuts and Contact", () => {
+    render(<SettingsWindow />);
+    const nav = document.querySelector(".settings-sidebar nav") as HTMLElement;
+    const labels = within(nav).getAllByRole("button").map((button) => button.textContent?.trim());
+    expect(labels).toEqual(["General", "Appearance", "Reading", "Shortcuts", "Assistant", "Contact"]);
+  });
+
   it("shows toggle feed view mode in shortcuts instead of refresh current view", () => {
     render(<SettingsWindow />);
 

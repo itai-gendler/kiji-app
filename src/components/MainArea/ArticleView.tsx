@@ -65,8 +65,10 @@ import { ARTICLE_VIEW_CLOSE_ANIMATION_MS, ARTICLE_VIEW_OPENING_MS } from '@/cons
 import { isArticleReaderModeRenderable } from './articleViewReaderMode';
 import type { Article } from '@/types/article';
 import { animateElementScrollTop, getScrollableBottom } from '@/utils/fixedTimeScroll';
-import { useDependencyEffect, useUnmountEffect } from '@/hooks/useLifecycleEffects';
+import { useDependencyEffect, useMountEffect, useUnmountEffect } from '@/hooks/useLifecycleEffects';
 import { useArticleViewPerformanceMetrics } from './hooks/useArticleViewPerformanceMetrics';
+import { useCurrentArticleForAssistants } from './hooks/useCurrentArticleForAssistants';
+import { subscribeAssistantLibraryChanges, toArticleListUpdate } from '@/services/assistant/assistantLibraryChanges';
 import {
   estimateUtf8Bytes,
   logArticleRenderAttribution,
@@ -1125,6 +1127,16 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
   const rawArticleBodyHtml = isReaderModeActive && !useSavedArticleSnapshot
     ? (readerContent?.content || '')
     : (articleToShow?.content || '');
+  useCurrentArticleForAssistants({
+    article: articleToShow,
+    visible: standalone || articleViewOverlayPhase === 'opening' || articleViewOverlayPhase === 'open',
+    isTemporary: isTemporaryArticle,
+    isSavedSnapshot: useSavedArticleSnapshot,
+    // Only reader HTML that belongs to the shown article (not the previous one mid-switch).
+    readerHtml: isReaderModeActive && !useSavedArticleSnapshot && readerContentHashRef.current === articleToShow?.hash
+      ? (readerContent?.content || null)
+      : null,
+  });
   const readingMinutes = useMemo(() => estimateReadingMinutes(rawArticleBodyHtml), [rawArticleBodyHtml]);
   const publishedDateLabel = formatArticleDate(articleToShow?.publishedDate);
   // Phase 1: sanitize immediately for first render so users never see raw
@@ -1187,6 +1199,21 @@ export const ArticleView: React.FC<ArticleViewProps> = ({ article: propArticle, 
 
     updateArticleInList(hash, updates);
   }, [queuePendingArticleListUpdate, updateArticleInList]);
+
+  const queueOrApplyArticleListUpdateRef = useRef(queueOrApplyArticleListUpdate);
+  queueOrApplyArticleListUpdateRef.current = queueOrApplyArticleListUpdate;
+
+  // An assistant changed the article shown here (native already saved it):
+  // update this view, and queue the row update like the view's own changes.
+  useMountEffect(() => subscribeAssistantLibraryChanges((change) => {
+    const hash = currentArticleHashRef.current;
+    const entry = hash ? change.articles.find((candidate) => candidate.hash === hash) : undefined;
+    if (!hash || !entry) return;
+    const updates = toArticleListUpdate(entry);
+    setArticleToShow((prev) => (prev?.hash === hash ? { ...prev, ...updates } : prev));
+    if (entry.saved !== undefined) setIsSaved(entry.saved);
+    queueOrApplyArticleListUpdateRef.current(hash, updates);
+  }));
 
   const flushPendingArticleListUpdate = useCallback(() => {
     const pending = pendingArticleListUpdateRef.current;

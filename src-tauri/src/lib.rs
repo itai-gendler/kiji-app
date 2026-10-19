@@ -2,6 +2,7 @@ mod db;
 mod diagnostics;
 mod e2e;
 mod feeds;
+mod mcp;
 mod net;
 mod saved;
 mod scheduler;
@@ -72,7 +73,18 @@ use system::{
     system_clipboard_read_text, system_clipboard_write_text, system_theme_get_accent_color,
     AppIconState, ResolvedAppearance,
 };
-use tauri::{webview::PageLoadEvent, Manager, RunEvent};
+use mcp::{
+    assistant_clear_current_article, assistant_current_article_sharing,
+    assistant_get_client_setup, assistant_get_status,
+    assistant_open_client_link, assistant_reset_access, assistant_set_current_article,
+    assistant_update_settings, assistant_write_extension, AssistantState,
+};
+use tauri::{webview::PageLoadEvent, Manager, RunEvent, WindowEvent};
+
+/// `kiji-app --mcp`: stdio bridge for AI clients (no window, no database).
+pub fn run_mcp_bridge() -> i32 {
+    mcp::bridge::run_stdio_bridge()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -100,6 +112,16 @@ pub fn run() {
                     let _ = window.destroy();
                 }
             });
+        })
+        .on_window_event(|window, event| {
+            let Some(assistant) = window.app_handle().try_state::<Arc<AssistantState>>() else {
+                return;
+            };
+            match event {
+                WindowEvent::Focused(true) => assistant.window_focused(window.label()),
+                WindowEvent::Destroyed => assistant.window_destroyed(window.label()),
+                _ => {}
+            }
         })
         .setup(|app| {
             let settings_state =
@@ -148,6 +170,10 @@ pub fn run() {
             app.manage(settings_state);
             app.manage(Arc::new(ArticleWindowState::new()));
             app.manage(Arc::new(UpdateWindowState::new()));
+            let assistant_state =
+                AssistantState::load(&app.handle(), db_state.clone()).map_err(std::io::Error::other)?;
+            assistant_state.apply();
+            app.manage(assistant_state);
             app.manage(db_state);
             app.manage(sync_state);
             app.manage(SavedExportState::new());
@@ -162,6 +188,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             articles_begin_search,
             articles_cancel_search,
+            assistant_clear_current_article,
+            assistant_current_article_sharing,
+            assistant_get_client_setup,
+            assistant_get_status,
+            assistant_open_client_link,
+            assistant_reset_access,
+            assistant_set_current_article,
+            assistant_update_settings,
+            assistant_write_extension,
             articles_clean_old_across_feeds,
             articles_clean_old_by_feed,
             articles_count_by_feed,
@@ -280,6 +315,9 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
+                if let Some(assistant) = app_handle.try_state::<Arc<AssistantState>>() {
+                    assistant.shutdown();
+                }
                 if let Some(scheduler_state) = app_handle.try_state::<Arc<FeedSchedulerState>>() {
                     let _ = scheduler_state.stop();
                 }

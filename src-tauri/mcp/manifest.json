@@ -1,0 +1,41 @@
+{
+  "manifest_version": "0.3",
+  "name": "kiji",
+  "display_name": "KiJi",
+  "version": "__VERSION__",
+  "description": "Let Claude read your KiJi RSS library and the article you're reading.",
+  "long_description": "Read your KiJi library from Claude: stations, feeds, articles by time range, saved articles with highlights, and the article open in KiJi right now. Requires the KiJi app with Settings → Assistant → \"Let assistants read your KiJi library\" turned on. Read-only unless you also turn on \"Allow assistants to make changes\" (mark read, star, save); you choose which stations assistants can see.",
+  "author": { "name": "Yomi Lab", "url": "https://kiji.yomilab.app" },
+  "homepage": "https://kiji.yomilab.app",
+  "support": "https://kiji.yomilab.app",
+  "privacy_policies": ["https://kiji.yomilab.app/privacy"],
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/kiji-mcp",
+    "mcp_config": { "command": "${__dirname}/server/kiji-mcp", "args": [] }
+  },
+  "tools": [
+    { "name": "get_current_article", "description": "The article open in KiJi right now" },
+    { "name": "list_stations", "description": "Your stations with feed and unread counts" },
+    { "name": "list_feeds", "description": "Subscribed feeds, optionally by station" },
+    { "name": "list_articles", "description": "Articles by station, feed or library for a time range" },
+    { "name": "search_articles", "description": "Keyword search over your articles" },
+    { "name": "get_article", "description": "Full text of one article" },
+    { "name": "get_articles", "description": "Full text of several articles" },
+    { "name": "get_digest", "description": "Digest grouped by station and feed" },
+    { "name": "list_saved_articles", "description": "Your saved articles" },
+    { "name": "get_saved_article", "description": "A saved article with highlights and notes" },
+    { "name": "mark_read", "description": "Mark articles read or unread (only when you allow changes in KiJi)" },
+    { "name": "set_starred", "description": "Star or unstar articles (only when you allow changes in KiJi)" },
+    { "name": "save_article", "description": "Save an article to Saved articles (only when you allow changes in KiJi)" }
+  ],
+  "tools_generated": true,
+  "prompts": [
+    { "name": "explain_current_article", "description": "Explain what I'm reading", "text": "Use get_current_article and explain the article I have open." },
+    { "name": "daily_briefing", "description": "Daily briefing", "text": "Use get_digest with since 24h and brief me by topic." }
+  ],
+  "keywords": ["rss", "news", "reading", "research"],
+  "license": "GPL-3.0-or-later",
+  "compatibility": { "platforms": ["darwin"] }
+}

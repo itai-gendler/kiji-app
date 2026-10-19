@@ -1,5 +1,6 @@
 export { tauriCommandCatalog } from "./commandCatalog";
 import * as articles from "./articles";
+import * as assistant from "./assistant";
 import * as database from "./database";
 import * as diagnostics from "./diagnostics";
 import * as feeds from "./feeds";
@@ -12,6 +13,7 @@ import * as tasks from "./tasks";
 
 export const tauriClient = {
   articles,
+  assistant,
   database,
   diagnostics,
   feeds,
