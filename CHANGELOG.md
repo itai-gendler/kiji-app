@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- On Windows and Linux, the close button of the full-window image viewer no longer sits under the window's own Close button, so closing an image no longer closes the window.
+
 ## [1.6.0] - 2026-10-18
 
 ### Added

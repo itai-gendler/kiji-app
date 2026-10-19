@@ -1,7 +1,10 @@
 /* Full-window image viewer opened from article content images. */
 .article-image-lightbox {
+  /* Height of the window's own top strip that must stay uncovered (0 on macOS,
+     where the native traffic lights sit in the overlay title bar). */
+  --lightbox-top-inset: 0px;
   position: fixed;
-  inset: 0;
+  inset: var(--lightbox-top-inset) 0 0 0;
   z-index: 2000;
   display: flex;
   align-items: center;
@@ -31,7 +34,7 @@
 .article-image-lightbox-image {
   display: block;
   max-width: 100%;
-  max-height: calc(100vh - 140px);
+  max-height: calc(100vh - 140px - var(--lightbox-top-inset));
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
@@ -91,6 +94,18 @@
 
 .article-image-lightbox-next {
   right: 14px;
+}
+
+/* Windows/Linux: the main window's AppMenuBar and the secondary windows'
+   fixed caption buttons fill the top 36px (above this overlay). Start below
+   that strip so the lightbox close button never sits under the window Close
+   button, and the window controls stay usable while an image is open. */
+:root[data-os="windows"] .article-image-lightbox,
+:root[data-os="linux"] .article-image-lightbox,
+:root[data-os="other"] .article-image-lightbox {
+  --lightbox-top-inset: 36px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 @media (max-width: 560px) {
