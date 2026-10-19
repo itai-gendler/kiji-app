@@ -1,9 +1,9 @@
-/* Add Feed Modal - Content Styles Only */
+/* Add Feeds modal - content styles only (card chrome comes from Modal.css) */
 .add-feed-modal-body {
   padding: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  gap: 16px;
 }
 
 .add-feed-modal-title {
@@ -13,61 +13,322 @@
   color: var(--theme-text-primary);
 }
 
-.add-feed-modal-description {
-  margin: 8px 0 0;
+/* Segmented tabs */
+.add-feed-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border-radius: calc(var(--radius-field) + 3px);
+  background-color: var(--theme-hover-overlay);
+}
+
+.add-feed-tab {
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-field);
+  padding: 7px 10px;
+  background: transparent;
   color: var(--theme-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.45;
-}
-
-.add-feed-modal-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font: inherit;
   font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.add-feed-modal-input-row {
-  margin-top: 16px;
-  margin-bottom: 0;
+.add-feed-tab:hover:not(:disabled):not([aria-selected="true"]) {
+  color: var(--theme-text-primary);
 }
 
-.add-feed-modal-input {
+.add-feed-tab[aria-selected="true"] {
+  background-color: var(--framework-input-bg);
+  color: var(--theme-text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.add-feed-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.add-feed-tab:focus-visible,
+.add-feed-option:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.add-feed-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Link input */
+.add-feed-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--theme-text-secondary);
+}
+
+.add-feed-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.add-feed-input-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 18px !important;
+  color: var(--theme-text-tertiary, var(--theme-text-secondary));
+  pointer-events: none;
+}
+
+.add-feed-input.modal-input {
+  padding-left: 34px;
   min-width: 0;
 }
 
-.add-feed-modal-error {
-  margin-top: 12px;
-  padding: 10px 12px;
-  background-color: #fee2e2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  color: #dc2626;
-  font-size: 0.875rem;
+.add-feed-input.modal-input:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
-.add-feed-modal-actions {
+/* Preview and status */
+.add-feed-preview-slot {
+  min-height: 64px;
+}
+
+.add-feed-hint {
+  margin: 2px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--theme-text-secondary);
+}
+
+.add-feed-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-field);
+  background-color: var(--theme-hover-overlay);
+  color: var(--theme-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.add-feed-status-error {
+  background-color: color-mix(in srgb, var(--color-error) 10%, transparent);
+  color: var(--theme-text-primary);
+}
+
+.add-feed-status-icon {
+  flex: none;
+  font-size: 18px !important;
+  color: var(--color-error);
+}
+
+.add-feed-preview {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: var(--border) solid var(--framework-input-border);
+  border-radius: var(--radius-box);
+  background-color: var(--framework-input-bg);
+  animation: add-feed-fade-in 0.18s ease-out;
+}
+
+.add-feed-preview-avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-field);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  overflow: hidden;
+}
+
+.add-feed-preview-avatar svg {
+  font-size: 20px;
+}
+
+.add-feed-preview-favicon {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.add-feed-preview-text {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 16px;
+  gap: 2px;
 }
 
-.add-feed-modal-button {
+.add-feed-preview-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--theme-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-feed-preview-meta {
+  font-size: 0.8125rem;
+  color: var(--theme-text-secondary);
+}
+
+.add-feed-preview-items {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-feed-preview-items li {
+  font-size: 0.8125rem;
+  color: var(--theme-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-feed-preview-items li::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--theme-text-tertiary, var(--theme-text-secondary));
+}
+
+/* Import options */
+.add-feed-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.add-feed-option {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   width: 100%;
-  min-height: 40px;
+  padding: 12px;
+  text-align: left;
+  font: inherit;
+  border: var(--border) solid var(--framework-input-border);
+  border-radius: var(--radius-box);
   background-color: var(--framework-input-bg);
+  color: var(--theme-text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.add-feed-option:hover:not(:disabled) {
   border-color: var(--color-primary);
+  background-color: color-mix(in srgb, var(--color-primary) 5%, var(--framework-input-bg));
+}
+
+.add-feed-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.add-feed-option-icon {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-field);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--color-primary);
 }
 
-.add-feed-modal-button:hover:not(:disabled) {
-  background-color: var(--theme-hover-overlay);
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  opacity: 1;
+.add-feed-option-icon svg {
+  font-size: 20px;
 }
 
-[data-theme="dark"] .add-feed-modal-error {
-  background-color: rgba(220, 38, 38, 0.15);
-  border-color: rgba(220, 38, 38, 0.3);
-  color: #f87171;
+.add-feed-option-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-feed-option-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.add-feed-option-meta {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--theme-text-secondary);
+}
+
+.add-feed-option-chevron {
+  flex: none;
+  font-size: 20px !important;
+  color: var(--theme-text-secondary);
+}
+
+.add-feed-hidden-input {
+  display: none;
+}
+
+/* Footer */
+.add-feed-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.add-feed-action {
+  min-width: 96px;
+  min-height: 34px;
+}
+
+.add-feed-action:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Loading spinner (inherits text color) */
+.add-feed-spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: add-feed-spin 0.7s linear infinite;
+}
+
+.add-feed-option-icon .add-feed-spinner {
+  width: 18px;
+  height: 18px;
+}
+
+@keyframes add-feed-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes add-feed-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .add-feed-preview { animation: none; }
+  .add-feed-spinner { animation-duration: 1.6s; }
 }
