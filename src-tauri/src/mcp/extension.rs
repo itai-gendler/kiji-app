@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(manifest["version"], "9.9.9");
         assert_eq!(manifest["server"]["entry_point"], "server/kiji-mcp");
         let tool_names: Vec<&str> = manifest["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        for tool in crate::mcp::protocol::tool_definitions() {
+        for tool in crate::mcp::protocol::tool_definitions().into_iter().chain(crate::mcp::write::tool_definitions()) {
             assert!(tool_names.contains(&tool["name"].as_str().unwrap()), "manifest lists {}", tool["name"]);
         }
 

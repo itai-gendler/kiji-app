@@ -1,8 +1,8 @@
-mod articles;
+pub(crate) mod articles;
 pub(crate) mod feeds;
 mod migrations;
 mod models;
-mod saved;
+pub(crate) mod saved;
 pub(crate) mod schema;
 pub(crate) mod search;
 mod tags;

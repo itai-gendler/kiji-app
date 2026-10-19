@@ -23,6 +23,8 @@ export interface AssistantSettingsView {
   includeUnstationedFeeds: boolean;
   shareSavedArticles: boolean;
   shareNotesAndHighlights: boolean;
+  /** Write tools (mark read, star, save). Off by default. */
+  allowChanges: boolean;
   httpEnabled: boolean;
   httpPort: number;
 }

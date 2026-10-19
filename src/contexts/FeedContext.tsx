@@ -45,6 +45,7 @@ import {
 import { logListRefreshAttribution } from '@/services/diagnostics/webKitAttribution';
 import { recordRobustnessEvent } from '@/services/diagnostics/robustnessMetrics';
 import { feedLibraryMutationBus } from '@/services/ui/feedLibraryMutationBus';
+import { subscribeAssistantLibraryChanges, toArticleListUpdate } from '@/services/assistant/assistantLibraryChanges';
 import { feedRefreshCoordinator } from '@/services/feeds/feedRefreshCoordinator';
 import { feedRefreshActivity } from '@/services/feeds/feedRefreshActivity';
 import { interactionPerformance } from '@/services/performance/interactionPerformance';
@@ -383,7 +384,12 @@ interface CollectionActions {
   refreshFeed: () => Promise<void>;
   reloadCurrentSourceFromStore: () => Promise<void>;
   loadMoreArticles: (options?: LoadMoreArticlesOptions) => Promise<void>;
-  updateArticleInList: (hash: string, updates?: ArticleListUpdatePayload, article?: Article | null) => void;
+  updateArticleInList: (
+    hash: string,
+    updates?: ArticleListUpdatePayload,
+    article?: Article | null,
+    options?: { insertIntoSavedView?: boolean },
+  ) => void;
   syncArticleListViewport: (snapshot: ArticleListViewportSnapshot) => void;
   searchCurrentSource: (query: string) => Promise<void>;
   clearArticleListSearch: () => Promise<void>;
@@ -1132,6 +1138,7 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const warmFullSuccessorSourceKeyRef = useRef<string | null>(null);
   const articleViewOverlayPhaseRef = useRef<ArticleViewOverlayPhase>('closed');
   const activeArticleHashRef = useRef<string | null>(null);
+  const updateArticleInListRef = useRef<CollectionActions['updateArticleInList']>(() => {});
   const isFeedProviderMountedRef = useRef(false);
 
   const refreshFeedFromNetwork = useCallback(async (
@@ -4797,14 +4804,20 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     hash: string,
     updates: ArticleListUpdatePayload = { read: true },
     article?: Article | null,
+    options?: { insertIntoSavedView?: boolean },
   ) => {
     const selected = navigationState.selectedSmartView;
     const removeFromUnread = selected === 'unread' && updates.read === true;
     const removeFromSaved = selected === 'saved' && updates.saved === false;
     const removeFromRead = selected === 'read' && updates.read === false;
-    const insertOrMoveToTop = selected === 'read'
+    // A snapshot saved elsewhere (assistant) is the newest Saved row.
+    const insertIntoSaved = selected === 'saved'
+      && options?.insertIntoSavedView === true
+      && updates.saved === true
+      && Boolean(article);
+    const insertOrMoveToTop = insertIntoSaved || (selected === 'read'
       && !removeFromRead
-      && (updates.read === true || Boolean(updates.lastReadAt));
+      && (updates.read === true || Boolean(updates.lastReadAt)));
     const source = getRefreshSourceDescriptor(navigationState);
     const searchText = articleListSearchQueryRef.current;
     if (searchText && source) {
@@ -4943,6 +4956,39 @@ export const FeedProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   activeSourceRef.current = activeSourceSnapshot;
   articleViewOverlayPhaseRef.current = overlayState.articleViewOverlayPhase;
   activeArticleHashRef.current = overlayState.activeArticleHash;
+  updateArticleInListRef.current = updateArticleInList;
+
+  // Assistant write tools: native already persisted read/star/save and the
+  // feed counts (one writer per field), so this only publishes them to the
+  // sidebar and the visible list. The bus catches and logs listener failures.
+  useMountEffect(() => subscribeAssistantLibraryChanges(async (change) => {
+    if (change.feedCounts.length > 0) {
+      feedLibraryMutationBus.publishFeedsCountsUpdated(change.feedCounts);
+    }
+    const isSavedViewActive = () => {
+      const source = activeSourceRef.current;
+      return source?.type === 'smart' && source.viewType === 'saved';
+    };
+    for (const entry of change.articles) {
+      // The open article's row stays put while the deck is open; ArticleView
+      // merges the change and applies it on close, like its own read/save.
+      if (entry.hash === activeArticleHashRef.current && articleViewOverlayPhaseRef.current !== 'closed') {
+        continue;
+      }
+      const updates = toArticleListUpdate(entry);
+      let savedRow: Article | null = null;
+      if (
+        entry.saved === true
+        && entry.savedArticleId
+        && change.savedArticleIds.includes(entry.savedArticleId)
+        && isSavedViewActive()
+      ) {
+        savedRow = await savedArticlesService.getSavedViewArticle(entry.savedArticleId);
+        if (!isSavedViewActive()) savedRow = null;
+      }
+      updateArticleInListRef.current(entry.hash, updates, savedRow, { insertIntoSavedView: savedRow !== null });
+    }
+  }));
 
   useDependencyEffect(() => {
     const snapshot = nonSearchSnapshotRef.current;

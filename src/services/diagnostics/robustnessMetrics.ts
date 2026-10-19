@@ -31,6 +31,7 @@ export const ROBUSTNESS_COUNTER_KEYS = [
   'ui.saveRaceViewUpdateSkipped',
   'ui.keyboardHoldReset',
   'ui.deleteFlowPartialFailure',
+  'assistant.libraryChangeFailed',
 ] as const;
 
 export const ROBUSTNESS_DURATION_KEYS = [

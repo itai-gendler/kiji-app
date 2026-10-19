@@ -1,11 +1,13 @@
 //! Assistant access (MCP): lets AI clients read the user's library through
-//! the Model Context Protocol. Off by default; read-only.
+//! the Model Context Protocol. Off by default; read-only unless the separate
+//! "Allow assistants to make changes" toggle is on (see `write`).
 //!
 //! - The server runs inside the app (never a second process opening
 //!   `kiji.db`, which startup sidecar cleanup could corrupt).
 //! - Clients connect through `kiji-app --mcp` (stdio bridge → local socket /
 //!   named pipe) or, when enabled, a loopback HTTP endpoint with a bearer key.
-//! - Every request runs on a dedicated read-only connection with a timeout.
+//! - Every read runs on a dedicated read-only connection with a timeout;
+//!   write tools run on the app's writer and notify windows to refresh.
 
 pub mod bridge;
 mod client_setup;
@@ -19,6 +21,7 @@ mod query;
 mod settings;
 mod time_range;
 mod transport;
+mod write;
 
 use crate::db::DbState;
 use chrono::{SecondsFormat, Utc};
@@ -184,6 +187,43 @@ impl AssistantState {
         }
     }
 
+    fn emit_library_change(&self, change: &write::LibraryChange) {
+        use tauri::Emitter;
+        if let Ok(handle) = self.app.lock() {
+            if let Some(app) = handle.as_ref() {
+                if let Err(error) = app.emit(write::LIBRARY_CHANGED_EVENT, change) {
+                    eprintln!("[KiJi] Assistant library change event failed: {error}");
+                }
+            }
+        }
+    }
+
+    /// Saved-folder sync for a snapshot an assistant created (the renderer
+    /// queues its own saves the same way through `saved_sync_queue`).
+    fn queue_saved_folder_sync(&self, snapshot: &write::SavedSnapshot) {
+        let Ok(handle) = self.app.lock() else { return };
+        let Some(app) = handle.as_ref() else { return };
+        if let Some(sync) = app.try_state::<crate::saved::SavedSyncState>() {
+            sync.queue_mutation(crate::saved::SavedArticlesSyncEvent {
+                event_type: "saved".to_string(),
+                saved_article_id: snapshot.id.clone(),
+                title: snapshot.title.clone(),
+            });
+        }
+    }
+
+    /// Tells connected clients to re-read `tools/list` (write tools appear
+    /// or disappear with the "Allow changes" toggle).
+    fn notify_tools_changed(&self) {
+        let notification = json!({ "jsonrpc": "2.0", "method": "notifications/tools/list_changed" }).to_string();
+        let Ok(sessions) = self.sessions.lock() else { return };
+        for entry in sessions.values() {
+            if let Some(notifier) = &entry.notifier {
+                let _ = notifier.try_send(notification.clone());
+            }
+        }
+    }
+
     fn is_enabled(&self) -> bool {
         self.settings.lock().map(|settings| settings.enabled).unwrap_or(false)
     }
@@ -312,6 +352,9 @@ impl AssistantState {
             // Windows re-send what they show when sharing turns on.
             self.emit_current_article_sharing();
         }
+        if before.allow_changes != after.allow_changes && !listeners_changed {
+            self.notify_tools_changed();
+        }
         Ok(())
     }
 
@@ -430,6 +473,12 @@ impl AssistantState {
         }
         let settings = self.settings_snapshot();
         let current = if settings.share_current_article { self.current.current() } else { None };
+        if let Some((id, name, args)) = write_call(&message) {
+            if settings.allow_changes {
+                return Some(self.handle_write(session, id, name, args, settings, current).await);
+            }
+            // Off: the read-only path answers with a plain "turned off" error.
+        }
         // Work on a copy so the session lock is never held during a query
         // (the Settings status call reads sessions on the main thread).
         let Some(snapshot) = session.lock().ok().map(|guard| guard.clone()) else {
@@ -457,6 +506,46 @@ impl AssistantState {
             }
             Err(message) => id.map(|id| rpc_error(id, -32603, &message)),
         }
+    }
+
+    /// Runs a write tool on the writer connection, then tells every window
+    /// what changed. Never holds the session lock across the write.
+    async fn handle_write(
+        self: &Arc<Self>,
+        session: &Arc<Mutex<Session>>,
+        id: Value,
+        name: String,
+        args: Value,
+        settings: AssistantSettings,
+        current: Option<CurrentArticle>,
+    ) -> Value {
+        if let Ok(mut guard) = session.lock() {
+            guard.last_used_at = Some(now_stamp());
+            guard.last_action = Some(name.clone());
+        }
+        let result = self
+            .db
+            .write(move |conn| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    write::run(conn, &settings, current.as_ref(), &name, &args)
+                }))
+                .map_err(|_| "KiJi hit an unexpected problem making that change.".to_string())
+            })
+            .await;
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(message) => return rpc_error(id, -32603, &message),
+        };
+        if let Ok(done) = &outcome {
+            if !done.change.is_empty() {
+                self.emit_library_change(&done.change);
+                self.send_resource_updates(|uri| uri != CURRENT_ARTICLE_URI);
+            }
+            if let Some(snapshot) = &done.created_saved {
+                self.queue_saved_folder_sync(snapshot);
+            }
+        }
+        json!({ "jsonrpc": "2.0", "id": id, "result": write::tool_result(&outcome) })
     }
 
     fn set_current_article(self: &Arc<Self>, window_label: &str, input: CurrentArticleInput) -> Result<(), String> {
@@ -576,6 +665,23 @@ fn spawn_library_watch(
             last = Some(marker);
         }
     })
+}
+
+/// `(id, tool name, arguments)` when `message` is a `tools/call` request for
+/// a write tool.
+fn write_call(message: &Value) -> Option<(Value, String, Value)> {
+    let object = message.as_object()?;
+    if object.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return None;
+    }
+    let id = object.get("id")?.clone();
+    let params = object.get("params")?;
+    let name = params.get("name").and_then(Value::as_str)?;
+    if !write::is_write_tool(name) {
+        return None;
+    }
+    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    Some((id, name.to_string(), args))
 }
 
 pub(crate) fn rpc_error(id: Value, code: i64, message: &str) -> Value {
@@ -763,6 +869,39 @@ mod tests {
         let _ = shutdown.send(true);
         listener.await.unwrap().unwrap();
         assert!(!file.exists(), "endpoint file removed on shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn write_tools_run_on_the_writer_only_when_changes_are_allowed() {
+        let dir = std::env::temp_dir().join(format!("kiji-assistant-write-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The writer holds the library; the assistant reader is an empty
+        // database, so a write that ran on the reader would fail.
+        let db = DbState::for_tests(query::tests::fixture());
+        let state = AssistantState::load_from(settings::settings_path(&dir), db.clone()).unwrap();
+        state.settings.lock().unwrap().enabled = true;
+        let (_, session, _) = state.register_session(TransportKind::Local, None);
+        let call = json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "mark_read", "arguments": { "hash": "t1" } } });
+        let read_flag = || {
+            let db = db.clone();
+            async move {
+                db.write(|conn| conn.query_row("SELECT read FROM articles WHERE hash = 't1'", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string()))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let off = state.handle(&session, call.clone()).await.unwrap();
+        assert_eq!(off["result"]["isError"], true, "{off}");
+        assert_eq!(read_flag().await, 0);
+
+        state.settings.lock().unwrap().allow_changes = true;
+        let on = state.handle(&session, call).await.unwrap();
+        assert_eq!(on["result"]["isError"], false, "{on}");
+        assert_eq!(on["result"]["structuredContent"]["changed"], json!(["t1"]));
+        assert_eq!(read_flag().await, 1);
+        assert_eq!(session.lock().unwrap().last_action.as_deref(), Some("mark_read"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -269,7 +269,7 @@ export const AssistantSettings: React.FC = () => {
             <div className="settings-item-info">
               <label className="settings-item-label">Let assistants read your KiJi library</label>
               <p className="settings-item-description">
-                AI apps such as Claude, Cursor, or VS Code can read the stations and articles you choose below. They can't change anything.
+                AI apps such as Claude, Cursor, or VS Code can read the stations and articles you choose below. They can't change anything unless you allow it.
               </p>
               {accessStatusText ? (
                 <p className={`settings-inline-status${status.local.state === 'error' ? ' assistant-status-error' : ''}`}>
@@ -283,6 +283,23 @@ export const AssistantSettings: React.FC = () => {
                 disabled={saving}
                 label="Let assistants read your KiJi library"
                 onChange={(checked) => void update({ enabled: checked })}
+              />
+            </div>
+          </div>
+
+          <div className="settings-item">
+            <div className="settings-item-info">
+              <label className="settings-item-label">Allow assistants to make changes</label>
+              <p className="settings-item-description">
+                When you ask, assistants can mark articles read or unread, star them, and save them to Saved. They can't delete anything, and only articles they can see are affected.
+              </p>
+            </div>
+            <div className="settings-item-control">
+              <Switch
+                checked={settings.allowChanges}
+                disabled={saving || !settings.enabled}
+                label="Allow assistants to make changes"
+                onChange={(checked) => void update({ allowChanges: checked })}
               />
             </div>
           </div>

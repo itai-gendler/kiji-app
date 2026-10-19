@@ -130,6 +130,12 @@ class SavedArticlesService {
     });
   }
 
+  /** One saved snapshot as a Saved-view list row (null when it is gone). */
+  async getSavedViewArticle(savedArticleId: string): Promise<Article | null> {
+    const savedArticle = await savedArticlesManager.getSavedArticle(savedArticleId);
+    return savedArticle ? this.toListArticle(savedArticle) : null;
+  }
+
   async findSavedArticle(articleHash: string, articleUrl?: string): Promise<SavedArticle | null> {
     return savedArticlesManager.findSavedArticle(articleHash, articleUrl);
   }

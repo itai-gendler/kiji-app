@@ -324,6 +324,29 @@ pub fn feed_is_exposed(conn: &Connection, exposure: &Exposure, feed_id: &str) ->
     .map_err(sql_error)
 }
 
+/// Whether an article is visible under `exposure` (its own feed or any
+/// cross-posting points at a shared feed). Write tools check this first.
+pub fn article_is_exposed(conn: &Connection, exposure: &Exposure, hash: &str) -> Result<bool, String> {
+    let mut params = Vec::new();
+    let cte = exposure.exposed_feeds_cte(&mut params);
+    params.push(Value::Text(hash.to_string()));
+    conn.query_row(
+        &format!(
+            "WITH {cte}
+             SELECT 1 FROM articles a
+             WHERE a.hash = ?
+               AND (a.feed_id IN (SELECT id FROM exposed_feeds)
+                    OR EXISTS (SELECT 1 FROM article_feed_items afi
+                               WHERE afi.article_hash = a.hash AND afi.feed_id IN (SELECT id FROM exposed_feeds)))"
+        ),
+        params_from_iter(params),
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|row| row.is_some())
+    .map_err(sql_error)
+}
+
 /// Look-back windows tried, newest first, when no `since` is given. Grouping
 /// every mapping of a large library takes seconds; a recent window that
 /// already holds more than `limit` rows yields the same top rows.

@@ -22,6 +22,9 @@ pub struct AssistantSettings {
     pub include_unstationed_feeds: bool,
     pub share_saved_articles: bool,
     pub share_notes_and_highlights: bool,
+    /// Write tools (mark read, star, save). Separate from read access, off
+    /// by default.
+    pub allow_changes: bool,
     /// Loopback HTTP endpoint for clients that only take a URL.
     pub http_enabled: bool,
     pub http_port: u16,
@@ -38,6 +41,7 @@ impl Default for AssistantSettings {
             include_unstationed_feeds: true,
             share_saved_articles: true,
             share_notes_and_highlights: false,
+            allow_changes: false,
             http_enabled: false,
             http_port: DEFAULT_HTTP_PORT,
             access_key: String::new(),
@@ -55,6 +59,7 @@ pub struct AssistantSettingsView {
     pub include_unstationed_feeds: bool,
     pub share_saved_articles: bool,
     pub share_notes_and_highlights: bool,
+    pub allow_changes: bool,
     pub http_enabled: bool,
     pub http_port: u16,
 }
@@ -68,6 +73,7 @@ impl From<&AssistantSettings> for AssistantSettingsView {
             include_unstationed_feeds: settings.include_unstationed_feeds,
             share_saved_articles: settings.share_saved_articles,
             share_notes_and_highlights: settings.share_notes_and_highlights,
+            allow_changes: settings.allow_changes,
             http_enabled: settings.http_enabled,
             http_port: settings.http_port,
         }
@@ -85,6 +91,7 @@ pub struct AssistantSettingsPatch {
     pub include_unstationed_feeds: Option<bool>,
     pub share_saved_articles: Option<bool>,
     pub share_notes_and_highlights: Option<bool>,
+    pub allow_changes: Option<bool>,
     pub http_enabled: Option<bool>,
     pub http_port: Option<u16>,
 }
@@ -108,6 +115,9 @@ impl AssistantSettings {
         }
         if let Some(value) = patch.share_notes_and_highlights {
             self.share_notes_and_highlights = value;
+        }
+        if let Some(value) = patch.allow_changes {
+            self.allow_changes = value;
         }
         if let Some(value) = patch.http_enabled {
             self.http_enabled = value;
@@ -217,6 +227,7 @@ mod tests {
         assert!(!settings.enabled);
         assert!(settings.share_current_article);
         assert!(!settings.share_notes_and_highlights);
+        assert!(!settings.allow_changes, "write tools stay off until the user allows them");
         assert!(!settings.http_enabled);
         assert_eq!(settings.shared_stations, None);
     }

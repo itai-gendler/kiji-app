@@ -11,6 +11,7 @@ const baseStatus = (): AssistantStatus => ({
     includeUnstationedFeeds: true,
     shareSavedArticles: true,
     shareNotesAndHighlights: false,
+    allowChanges: false,
     httpEnabled: false,
     httpPort: 47615,
   },
@@ -88,6 +89,19 @@ describe("AssistantSettings", () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(assistant.updateSettings).toHaveBeenCalledWith({ enabled: true }));
     expect(await screen.findByText("Ready. Assistants can connect while KiJi is open.")).toBeTruthy();
+  });
+
+  it("keeps changes off by default and only allows them once access is on", async () => {
+    render(<AssistantSettings />);
+    const changes = (await screen.findByLabelText("Allow assistants to make changes")) as HTMLInputElement;
+    expect(changes.checked).toBe(false);
+    expect(changes.disabled).toBe(true);
+
+    fireEvent.click(screen.getByLabelText("Let assistants read your KiJi library"));
+    await waitFor(() => expect((screen.getByLabelText("Allow assistants to make changes") as HTMLInputElement).disabled).toBe(false));
+    assistant.updateSettings.mockClear();
+    fireEvent.click(screen.getByLabelText("Allow assistants to make changes"));
+    await waitFor(() => expect(assistant.updateSettings).toHaveBeenCalledWith({ allowChanges: true }));
   });
 
   it("switches to chosen stations and saves the picked list", async () => {
