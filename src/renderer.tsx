@@ -6,6 +6,7 @@ import { FeedE2eCollectionHost } from "./hooks/FeedE2eCollectionHost";
 import { ArticleWindow } from "./components/ArticleWindow/ArticleWindow";
 import { UpdateWindow } from "./components/UpdateWindow/UpdateWindow";
 import { SettingsWindow } from "./components/SettingsWindow/SettingsWindow";
+import { ManageFeedsWindow } from "./components/ManageFeedsWindow/ManageFeedsWindow";
 import { AppMenuBar } from "./components/AppMenuBar/AppMenuBar";
 import { TrafficLights } from "./components/TrafficLights/TrafficLights";
 import { FeedProvider } from "./contexts/FeedContext";
@@ -175,6 +176,17 @@ function renderWindow(windowType: RendererWindowType): React.ReactElement {
         <ThemeProvider>
           <TrafficLights />
           <SettingsWindow />
+        </ThemeProvider>
+      </React.StrictMode>
+    );
+  }
+
+  if (windowType === "manage-feeds") {
+    return (
+      <React.StrictMode>
+        <ThemeProvider>
+          <TrafficLights />
+          <ManageFeedsWindow />
         </ThemeProvider>
       </React.StrictMode>
     );

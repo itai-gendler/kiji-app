@@ -20,7 +20,7 @@ export const TOOLTIPS = {
     refresh: 'Refresh current view',
     addFeed: 'Add new feed',
     settings: 'Settings',
-    editFeeds: 'Edit feeds',
+    editFeeds: 'Manage feeds',
     themeAuto: 'Theme: Auto (follow system)',
     themeLight: 'Theme: Light',
     themeDark: 'Theme: Dark',
@@ -32,12 +32,4 @@ export const TOOLTIPS = {
     searchDisabled: 'Add feeds to search',
   },
 
-  feedEdit: {
-    search: 'Search feeds',
-    searchDisabled: 'Add feeds to search',
-    exportAllFeeds: 'Export all feeds (OPML)',
-    importFeeds: 'Import feeds (OPML)',
-    moreActions: 'More feed actions',
-    addStation: 'Add station',
-  },
 } as const;

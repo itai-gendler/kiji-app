@@ -236,3 +236,112 @@ export const GridGlyph = glyph('square.grid.2x2', (
     <rect x="13.4" y="13.4" width="6.8" height="6.8" rx="1.8" />
   </>
 ));
+
+/* Manage Feeds window: tabs */
+export const FeedsGlyph = glyph('dot.radiowaves.up.forward', (
+  <>
+    <circle cx="6" cy="18" r="1.6" fill="currentColor" stroke="none" />
+    <path d="M4.6 11.4a8 8 0 0 1 8 8" />
+    <path d="M4.6 5.2a14.2 14.2 0 0 1 14.2 14.2" />
+  </>
+));
+
+export const StationsGlyph = glyph('square.stack', (
+  <>
+    <rect x="4.4" y="9.2" width="15.2" height="10.6" rx="2.4" />
+    <path d="M6.6 6.4h10.8M8.8 3.8h6.4" />
+  </>
+));
+
+export const SidebarItemsGlyph = glyph('sidebar.left', (
+  <>
+    <rect x="3" y="4.6" width="18" height="14.8" rx="2.6" />
+    <path d="M9.4 4.6v14.8M5.4 8.4h1.8M5.4 11.2h1.8M5.4 14h1.8" />
+  </>
+));
+
+export const ImportExportGlyph = glyph('arrow.up.arrow.down', (
+  <path d="M8 19.4V4.8M4.4 8.4 8 4.8l3.6 3.6M16 4.6v14.6M12.4 15.8l3.6 3.6 3.6-3.6" />
+));
+
+/* Manage Feeds window: actions */
+export const SearchGlyph = glyph('magnifyingglass', (
+  <>
+    <circle cx="10.6" cy="10.6" r="6" />
+    <path d="m15.2 15.2 4.6 4.6" />
+  </>
+));
+
+export const PlusGlyph = glyph('plus', <path d="M12 5v14M5 12h14" />);
+
+export const MinusGlyph = glyph('minus', <path d="M5 12h14" />);
+
+export const PencilGlyph = glyph('pencil', (
+  <>
+    <path d="M15.2 5.4 18.6 8.8 8.6 18.8l-4 .8.8-4Z" />
+    <path d="m13.4 7.2 3.4 3.4" />
+  </>
+));
+
+export const TrashGlyph = glyph('trash', (
+  <>
+    <path d="M4.6 6.8h14.8M9.6 6.6V5c0-.7.5-1.2 1.2-1.2h2.4c.7 0 1.2.5 1.2 1.2v1.6" />
+    <path d="m6.4 6.8.8 11.6c.1 1 .9 1.8 1.9 1.8h5.8c1 0 1.8-.8 1.9-1.8l.8-11.6M10.2 10.4v6.2M13.8 10.4v6.2" />
+  </>
+));
+
+export const DragHandleGlyph = glyph('line.3.horizontal', <path d="M5.4 8h13.2M5.4 12h13.2M5.4 16h13.2" />);
+
+export const EyeGlyph = glyph('eye', (
+  <>
+    <path d="M2.8 12c2.2-4 5.3-6 9.2-6s7 2 9.2 6c-2.2 4-5.3 6-9.2 6s-7-2-9.2-6Z" />
+    <circle cx="12" cy="12" r="2.8" />
+  </>
+));
+
+export const EyeSlashGlyph = glyph('eye.slash', (
+  <>
+    <path d="M9.6 6.3A9.6 9.6 0 0 1 12 6c3.9 0 7 2 9.2 6a15 15 0 0 1-2.4 3.2M15.4 17.3A9 9 0 0 1 12 18c-3.9 0-7-2-9.2-6a14 14 0 0 1 3.4-4.1" />
+    <path d="M9.9 10a2.8 2.8 0 0 0 4 4" />
+    <path d="m4 4 16 16" />
+  </>
+));
+
+export const WarningGlyph = glyph('exclamationmark.triangle', (
+  <>
+    <path d="M10.4 4.6 2.9 17.6c-.7 1.2.2 2.6 1.6 2.6h15c1.4 0 2.3-1.4 1.6-2.6L13.6 4.6c-.7-1.2-2.5-1.2-3.2 0Z" />
+    <path d="M12 9.4v4.4M12 16.9h.01" />
+  </>
+));
+
+export const ChevronDownGlyph = glyph('chevron.down', <path d="m6.4 9.4 5.6 5.6 5.6-5.6" />);
+
+export const CloseGlyph = glyph('xmark', <path d="M6.6 6.6 17.4 17.4M17.4 6.6 6.6 17.4" />);
+
+export const SmileGlyph = glyph('face.smiling', (
+  <>
+    <circle cx="12" cy="12" r="8.6" />
+    <path d="M8.6 14.2c.9 1.2 2 1.8 3.4 1.8s2.5-.6 3.4-1.8M9.2 9.6h.01M14.8 9.6h.01" />
+  </>
+));
+
+export const TrayArrowDownGlyph = glyph('tray.and.arrow.down', (
+  <>
+    <path d="M3.6 13.4v3.8c0 1.2 1 2.2 2.2 2.2h12.4c1.2 0 2.2-1 2.2-2.2v-3.8" />
+    <path d="M12 4v10M8.2 10.4 12 14.2l3.8-3.8" />
+  </>
+));
+
+export const ShareGlyph = glyph('square.and.arrow.up', (
+  <>
+    <path d="M8.4 9.4H7c-1.2 0-2.2 1-2.2 2.2v6.6c0 1.2 1 2.2 2.2 2.2h10c1.2 0 2.2-1 2.2-2.2v-6.6c0-1.2-1-2.2-2.2-2.2h-1.4" />
+    <path d="M12 14.4V3.8M8.4 7.2 12 3.6l3.6 3.6" />
+  </>
+));
+
+export const LinkGlyph = glyph('link', (
+  <>
+    <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.1 1.1" />
+    <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.1-1.1" />
+  </>
+));

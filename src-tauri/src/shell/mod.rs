@@ -7,12 +7,14 @@ mod window_guards;
 mod windows_chrome;
 
 pub use context_menu::{shell_context_menu_show_image, ImageContextMenuState};
-pub use menu::{shell_menu_update_state, ApplicationMenu};
+pub use menu::{shell_main_window_command, shell_menu_update_state, ApplicationMenu};
 pub use share::{shell_share, shell_share_list_services, shell_share_to_service};
 pub use window::{
     restore_main_window_bounds, shell_article_window_get_data, shell_article_window_open,
+    shell_manage_feeds_window_open, shell_manage_feeds_window_take_target,
     shell_settings_window_open, shell_update_window_get_data, shell_update_window_open,
-    shell_window_set_traffic_lights_visible, ArticleWindowState, UpdateWindowState,
+    shell_window_set_traffic_lights_visible, ArticleWindowState, ManageFeedsWindowState,
+    UpdateWindowState,
     UserInitiatedWindowsState,
 };
 pub(crate) use window::should_destroy_session_restored_window;

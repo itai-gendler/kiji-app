@@ -28,6 +28,7 @@ import { startRobustnessSummary } from '@/services/diagnostics/robustnessMetrics
 import { subscribeToWindowFocus } from '@/services/tauri/tauriEventSubscription';
 import { appToastService } from '@/services/ui/appToastService';
 import { confirmDialog } from '@/services/ui/confirmDialogService';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
 import { openSettingsWindow } from '@/services/ui/openSettingsWindow';
 import { isMainRendererWindow } from '@/utils/rendererWindow';
 
@@ -268,14 +269,12 @@ export const useTimedToast = (visibleMs: number): { message: string | null; show
 
 interface UseAppShortcutsInput {
   refreshFeed: () => Promise<void>;
-  openFeedEditView: () => void;
   isDeckOpen: boolean;
   requestCloseArticle: () => void;
 }
 
 export const useAppShortcuts = ({
   refreshFeed,
-  openFeedEditView,
   isDeckOpen,
   requestCloseArticle,
 }: UseAppShortcutsInput): void => {
@@ -354,14 +353,12 @@ export const useAppShortcuts = ({
 
         if (isOpenFeedEditViewShortcut(event)) {
           event.preventDefault();
-          if (isDeckOpen) {
-            requestCloseArticle();
-          }
-          openFeedEditView();
+          // Manage Feeds is its own window; the open article and list stay as they are.
+          await openManageFeedsWindow();
         }
       };
 
       void run();
     },
-  }), [refreshFeed, openFeedEditView, isDeckOpen, requestCloseArticle]);
+  }), [refreshFeed]);
 };

@@ -6,6 +6,7 @@ import InventoryIcon from '@mui/icons-material/Inventory';
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import { DEFAULT_SMART_VIEW_DEFINITIONS, type SmartViewId } from '@/constants';
 import { useFeedNavigation } from '@/contexts/FeedContext';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
 import { ButtonStack, type ButtonConfig } from '@/components/common/ButtonStack';
 import { useSmartViewsPatchedMutation } from '@/hooks/useFeedLibraryMutation';
 import { settingsManager } from '@/services/settings';
@@ -130,7 +131,7 @@ const SmartViewItem = React.memo<SmartViewItemProps>(({
 });
 
 export const SmartViews: React.FC = () => {
-  const { selectedSmartView, selectSmartView, openFeedEditView } = useFeedNavigation();
+  const { selectedSmartView, selectSmartView } = useFeedNavigation();
   const [smartViews, setSmartViews] = useState<SmartView[]>([]);
   const smartViewsPatched = useSmartViewsPatchedMutation();
   const emojisRef = useRef<Record<string, string>>({});
@@ -175,8 +176,8 @@ export const SmartViews: React.FC = () => {
   }, [selectSmartView]);
 
   const handleOpenFeedEditView = useCallback((viewId: SmartViewId) => {
-    openFeedEditView({ kind: 'smart-view', id: viewId });
-  }, [openFeedEditView]);
+    void openManageFeedsWindow({ kind: 'smart-view', id: viewId });
+  }, []);
 
   const reloadSmartViews = useCallback(async () => {
     const [smartViewSettings, stored] = await Promise.all([

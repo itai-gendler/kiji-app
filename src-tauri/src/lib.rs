@@ -59,11 +59,12 @@ use shell::{
     shell_context_menu_show_image, shell_dialog_confirm, shell_dialog_open_file,
     shell_dialog_pick_folder, shell_dialog_save_file,
     shell_file_read_text, shell_file_write_text,
-    shell_links_open_external, shell_menu_update_state, shell_settings_window_open,
+    shell_links_open_external, shell_main_window_command, shell_manage_feeds_window_open,
+    shell_manage_feeds_window_take_target, shell_menu_update_state, shell_settings_window_open,
     shell_window_set_traffic_lights_visible,
     shell_update_window_get_data, shell_update_window_open, shell_share,
     shell_share_list_services, shell_share_to_service, window_guards_plugin, ApplicationMenu,
-    ArticleWindowState, ImageContextMenuState, UpdateWindowState,
+    ArticleWindowState, ImageContextMenuState, ManageFeedsWindowState, UpdateWindowState,
     UserInitiatedWindowsState, should_destroy_session_restored_window,
 };
 use system::{
@@ -170,6 +171,7 @@ pub fn run() {
             app.manage(settings_state);
             app.manage(Arc::new(ArticleWindowState::new()));
             app.manage(Arc::new(UpdateWindowState::new()));
+            app.manage(Arc::new(ManageFeedsWindowState::default()));
             let assistant_state =
                 AssistantState::load(&app.handle(), db_state.clone()).map_err(std::io::Error::other)?;
             assistant_state.apply();
@@ -290,6 +292,9 @@ pub fn run() {
             shell_links_open_external,
             shell_menu_update_state,
             shell_settings_window_open,
+            shell_manage_feeds_window_open,
+            shell_manage_feeds_window_take_target,
+            shell_main_window_command,
             shell_window_set_traffic_lights_visible,
             shell_article_window_open,
             shell_article_window_get_data,

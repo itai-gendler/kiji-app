@@ -1,4 +1,4 @@
-use super::window::open_settings_window;
+use super::window::{open_manage_feeds_window, open_settings_window};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{
@@ -30,6 +30,7 @@ const MENU_LIBRARY_ALL: &str = "menu-library-all";
 const MENU_LIBRARY_READ: &str = "menu-library-read";
 const MENU_ADD_SUBSCRIPTION: &str = "menu-add-subscription";
 const MENU_IMPORT_FEEDS: &str = "menu-import-feeds";
+const MENU_MANAGE_FEEDS: &str = "menu-manage-feeds";
 const MENU_HELP_SUPPORT: &str = "menu-help-support";
 const MENU_HELP_WEBSITE: &str = "menu-help-website";
 
@@ -243,6 +244,15 @@ impl ApplicationMenu {
                 .map_err(menu_error)?,
                 &MenuItem::with_id(app, MENU_IMPORT_FEEDS, "Import Feeds", true, None::<&str>)
                     .map_err(menu_error)?,
+                &PredefinedMenuItem::separator(app).map_err(menu_error)?,
+                &MenuItem::with_id(
+                    app,
+                    MENU_MANAGE_FEEDS,
+                    "Manage Feeds...",
+                    true,
+                    Some("CmdOrCtrl+E"),
+                )
+                .map_err(menu_error)?,
             ],
         )
         .map_err(menu_error)?;
@@ -408,6 +418,11 @@ impl ApplicationMenu {
             }
             MENU_ADD_SUBSCRIPTION => emit_menu_command(app, AppMenuCommand::OpenAddSubscription),
             MENU_IMPORT_FEEDS => emit_menu_command(app, AppMenuCommand::ImportFeeds),
+            MENU_MANAGE_FEEDS => {
+                if let Err(error) = open_manage_feeds_window(app, None) {
+                    eprintln!("[KiJi] Failed to open Manage Feeds from the menu: {error}");
+                }
+            }
             MENU_HELP_SUPPORT => {
                 let subject = format!("{APP_OFFICIAL_NAME} Support");
                 let url = format!(
@@ -486,6 +501,18 @@ pub fn shell_menu_update_state(
     Ok(())
 }
 
+/// Run a main-window menu command from a secondary window (Manage Feeds →
+/// Add Feed / Import). Flows that select the result, boost the scheduler or
+/// show sidebar progress only exist in the main window, so they run there.
+#[tauri::command(rename_all = "camelCase")]
+pub fn shell_main_window_command(app: AppHandle, command: AppMenuCommand) -> Result<(), String> {
+    if app.get_webview_window("main").is_none() {
+        return Err("The main window is not available.".to_string());
+    }
+    emit_menu_command(&app, command);
+    Ok(())
+}
+
 fn emit_menu_command(app: &AppHandle, command: AppMenuCommand) {
     let Some(main_window) = app.get_webview_window("main") else {
         return;
@@ -533,4 +560,36 @@ fn form_urlencoded(values: &[(&str, &str)]) -> String {
         })
         .collect::<Vec<_>>()
         .join("&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_window_command_accepts_renderer_payloads() {
+        let add: AppMenuCommand =
+            serde_json::from_value(serde_json::json!({ "type": "openAddSubscription" }))
+                .expect("add feed command");
+        assert!(matches!(add, AppMenuCommand::OpenAddSubscription));
+        let import: AppMenuCommand =
+            serde_json::from_value(serde_json::json!({ "type": "importFeeds" }))
+                .expect("import command");
+        assert!(matches!(import, AppMenuCommand::ImportFeeds));
+    }
+
+    #[test]
+    fn subscriptions_menu_opens_manage_feeds_window() {
+        let production = include_str!("menu.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(production.contains("\"Manage Feeds...\""));
+        assert!(production.contains("Some(\"CmdOrCtrl+E\")"));
+        let handler = production
+            .split("MENU_MANAGE_FEEDS =>")
+            .nth(1)
+            .unwrap_or("");
+        assert!(handler.trim_start().starts_with("{\n                if let Err(error) = open_manage_feeds_window(app, None)"));
+    }
 }

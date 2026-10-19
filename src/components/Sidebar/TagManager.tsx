@@ -22,7 +22,9 @@ import {
   useStationsReorderedMutation,
   useStationMembershipReorderedMutation,
 } from '@/hooks/useFeedLibraryMutation';
-import { useFeedFaviconRefreshed, useFeedNavigation, type FeedEditTarget } from '@/contexts/FeedContext';
+import { useFeedFaviconRefreshed, useFeedNavigation } from '@/contexts/FeedContext';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
+import type { ManageFeedsTarget } from '@/types/manageFeeds';
 import { ButtonStack, type ButtonConfig } from '@/components/common/ButtonStack';
 import { FaviconImage } from '@/components/common/FaviconImage';
 import type { Tag } from '@/types/tag';
@@ -45,7 +47,7 @@ interface StationFeedItemProps {
   feed: Feed;
   isSelected: boolean;
   onSelectFeed: (feed: Feed) => Promise<void>;
-  onOpenFeedEditView: (target: FeedEditTarget) => void;
+  onOpenFeedEditView: (target: ManageFeedsTarget) => void;
   setRowRef: (id: string, node: HTMLElement | null) => void;
   onDragStart: (id: string, event: React.DragEvent) => void;
   onDragOver: (id: string, event: React.DragEvent) => void;
@@ -125,7 +127,7 @@ interface StationListItemProps {
   stationFeeds: Feed[];
   onToggleStation: (tagName: string) => void;
   onTagClick: (tagName: string) => void;
-  onOpenFeedEditView: (target: FeedEditTarget) => void;
+  onOpenFeedEditView: (target: ManageFeedsTarget) => void;
   onSelectFeed: (feed: Feed) => Promise<void>;
   selectedFeedId: string | null;
   onMembershipReordered: (stationName: string, feedIds: string[]) => void;
@@ -260,7 +262,7 @@ export const TagManager: React.FC = () => {
   expandedStationsRef.current = expandedStations;
   const tagsRef = useRef(tags);
   tagsRef.current = tags;
-  const { selectedTag, selectTag, selectedFeedId, selectFeed, openFeedEditView, clearFeedSelection } = useFeedNavigation();
+  const { selectedTag, selectTag, selectedFeedId, selectFeed, clearFeedSelection } = useFeedNavigation();
   const feedFaviconRefreshed = useFeedFaviconRefreshed();
   const patchedFeed = useFeedPatchedMutation();
   const feedsCountsUpdated = useFeedsCountsUpdatedMutation();
@@ -353,9 +355,9 @@ export const TagManager: React.FC = () => {
     }
   }, [selectTag, tags]);
 
-  const handleOpenFeedEditView = useCallback((target: FeedEditTarget) => {
-    openFeedEditView(target);
-  }, [openFeedEditView]);
+  const handleOpenFeedEditView = useCallback((target: ManageFeedsTarget) => {
+    void openManageFeedsWindow(target);
+  }, []);
 
   const handleMembershipReordered = useCallback((stationName: string, feedIds: string[]) => {
     setTags((current) => current.map((tag) => (

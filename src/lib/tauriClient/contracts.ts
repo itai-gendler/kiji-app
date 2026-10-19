@@ -1,5 +1,6 @@
 import type { AppSettings, AppSettingsPatch } from "../settings";
 import type { UpdateWindowPayload } from "@/services/system/appUpdateTypes";
+import type { ManageFeedsTarget } from "@/types/manageFeeds";
 
 export type ISODateString = string;
 export type DataUrlString = string;
@@ -1064,6 +1065,17 @@ export interface SavedContract {
 
 export interface ShellContract {
   openSettings: {
+    response: void;
+  };
+  openManageFeeds: {
+    request: { target: ManageFeedsTarget | null };
+    response: void;
+  };
+  takeManageFeedsTarget: {
+    response: ManageFeedsTarget | null;
+  };
+  runMainWindowCommand: {
+    request: { command: AppMenuCommand };
     response: void;
   };
   setTrafficLightsVisible: {

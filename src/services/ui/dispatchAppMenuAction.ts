@@ -5,11 +5,13 @@ import { publishAppMenuCommand } from '@/services/ui/appMenuCommandBus';
 import { logger } from '@/services/logger';
 import type { AppMenuAction, AppMenuLocalAction } from '@/services/ui/appMenuModel';
 import { openAboutWindow } from '@/services/system/appUpdateService';
+import { openManageFeedsWindow } from '@/services/ui/openManageFeedsWindow';
 import { openSettingsWindow } from '@/services/ui/openSettingsWindow';
 
 function isLocalAction(action: AppMenuAction): action is AppMenuLocalAction {
   return (
     action.type === 'openSettings'
+    || action.type === 'openManageFeeds'
     || action.type === 'about'
     || action.type === 'quit'
     || action.type === 'helpSupport'
@@ -21,6 +23,9 @@ async function dispatchLocalAction(action: AppMenuLocalAction): Promise<void> {
   switch (action.type) {
     case 'openSettings':
       await openSettingsWindow();
+      return;
+    case 'openManageFeeds':
+      await openManageFeedsWindow();
       return;
     case 'about': {
       try {
