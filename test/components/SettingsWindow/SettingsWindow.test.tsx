@@ -42,6 +42,7 @@ themeValue.updateReadingLayout.mockImplementation(async (patch) => {
 vi.mock("@/services/logger", () => ({
   logger: {
     info: vi.fn(),
+    warn: vi.fn(),
     error: vi.fn(),
     exportDiagnostics: vi.fn().mockResolvedValue({
       canceled: false,
@@ -191,7 +192,7 @@ describe("SettingsWindow", () => {
     render(<SettingsWindow />);
 
     clickSidebarCategory("General");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Enable saved article sync" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable saved article sync" }));
 
     await waitFor(() => {
       expect(settingsManager.setSavedArticlesSyncFolder).toHaveBeenCalledWith("/tmp/saved-sync");
@@ -201,11 +202,11 @@ describe("SettingsWindow", () => {
     expect(window.kijiAPI.notifySettingsChanged).toHaveBeenCalledTimes(1);
   });
 
-  it("shows and saves the no-ascii reading font setting", async () => {
+  it("shows and saves the East Asian reading font setting", async () => {
     render(<SettingsWindow />);
 
     clickSidebarCategory("Reading");
-    const noAsciiRow = screen.getByText("No-ASCII Font").closest(".settings-item");
+    const noAsciiRow = screen.getByText("East Asian text").closest(".settings-item");
     expect(noAsciiRow).not.toBeNull();
     expect(within(noAsciiRow as HTMLElement).getByRole("option", { name: "System Default" })).toBeInTheDocument();
     expect(within(noAsciiRow as HTMLElement).getByRole("option", { name: "PingFang SC (Chinese)" })).toBeInTheDocument();
@@ -323,10 +324,10 @@ describe("SettingsWindow", () => {
 
   it("keeps reading sliders on the same step after settings reload", async () => {
     const cases = [
-      { label: "Font Size", sliderValue: -1, expectedPatch: { fontSize: 17 } },
-      { label: "Font Weight", sliderValue: -1, expectedPatch: { fontWeight: 450 } },
-      { label: "Line Spacing", sliderValue: -1, expectedPatch: { lineSpacing: 1.75 } },
-      { label: "Max Width", sliderValue: -1, expectedPatch: { maxWidth: 710 } },
+      { label: "Font size", sliderValue: -1, expectedPatch: { fontSize: 17 } },
+      { label: "Font weight", sliderValue: -1, expectedPatch: { fontWeight: 450 } },
+      { label: "Line spacing", sliderValue: -1, expectedPatch: { lineSpacing: 1.75 } },
+      { label: "Text width", sliderValue: -1, expectedPatch: { maxWidth: 710 } },
     ];
 
     for (const { label, sliderValue, expectedPatch } of cases) {
@@ -356,4 +357,134 @@ describe("SettingsWindow", () => {
       reloadedView.unmount();
     }
   });
+  it("marks the active category and shows its title and subtitle in the pane header", () => {
+    render(<SettingsWindow />);
+    const nav = screen.getByRole("navigation", { name: "Settings" });
+
+    expect(within(nav).getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { level: 2, name: "General" })).toBeInTheDocument();
+
+    clickSidebarCategory("Reading");
+
+    expect(within(nav).getByRole("button", { name: "Reading" })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("button", { name: "General" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("heading", { level: 2, name: "Reading" })).toBeInTheDocument();
+    expect(screen.getByText("Fonts and layout for articles.")).toBeInTheDocument();
+  });
+
+  it("labels each select with its row title", async () => {
+    render(<SettingsWindow />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Check for new articles" })).toHaveValue("every-15m");
+    });
+    expect(screen.getByRole("combobox", { name: "Article cleanup" })).toHaveValue("defuddle");
+
+    clickSidebarCategory("Reading");
+    expect(screen.getByRole("combobox", { name: "Titles" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Body text" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "East Asian text" })).toBeInTheDocument();
+  });
+
+  it("saves the background update interval from the General pane", async () => {
+    render(<SettingsWindow />);
+
+    const select = screen.getByRole("combobox", { name: "Check for new articles" });
+    await waitFor(() => expect(select).toHaveValue("every-15m"));
+    fireEvent.change(select, { target: { value: "every-1h" } });
+
+    await waitFor(() => {
+      expect(settingsManager.setBackgroundUpdate).toHaveBeenCalledWith("every-1h");
+    });
+    expect(select).toHaveValue("every-1h");
+  });
+
+  it("shows the synced folder with a Change button that picks a new folder", async () => {
+    vi.mocked(settingsManager.getSettings).mockResolvedValue({
+      readTrackingAlgorithm: "on-open",
+      backgroundUpdate: "every-15m",
+      savedArticlesSyncFolder: "/Users/me/Saved",
+      contentParser: "defuddle",
+    });
+    render(<SettingsWindow />);
+
+    expect(await screen.findByText("/Users/me/Saved")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable saved article sync" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change…" }));
+
+    await waitFor(() => {
+      expect(window.kijiAPI.pickSavedArticlesSyncFolder).toHaveBeenCalledWith("/Users/me/Saved");
+    });
+    expect(await screen.findByText("/tmp/saved-sync")).toBeInTheDocument();
+    expect(settingsManager.setSavedArticlesSyncFolder).toHaveBeenCalledWith("/tmp/saved-sync");
+  });
+
+  it("switches text alignment with the segmented control and disables it with the custom layout off", async () => {
+    render(<SettingsWindow />);
+    clickSidebarCategory("Reading");
+
+    const alignment = screen.getByRole("group", { name: "Text alignment" });
+    expect(within(alignment).getByRole("button", { name: "Left" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(within(alignment).getByRole("button", { name: "Justified" }));
+    await waitFor(() => {
+      expect(themeValue.updateReadingLayout).toHaveBeenCalledWith({ justifyText: true });
+    });
+    expect(within(alignment).getByRole("button", { name: "Justified" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("switch", { name: "Enable custom reading layout" }));
+    await waitFor(() => {
+      expect(themeValue.updateReadingLayout).toHaveBeenCalledWith({ enabled: false });
+    });
+    expect(within(alignment).getByRole("button", { name: "Left" })).toBeDisabled();
+    expect(screen.getByRole("slider", { name: "Font size" })).toBeDisabled();
+  });
+
+  it("shows shortcuts as keycaps with macOS symbols", () => {
+    document.documentElement.setAttribute("data-os", "macos");
+    render(<SettingsWindow />);
+    clickSidebarCategory("Shortcuts");
+
+    const row = screen.getByText("Reset All Settings").closest(".shortcut-item") as HTMLElement;
+    const keys = Array.from(row.querySelectorAll("kbd")).map((key) => key.textContent);
+    expect(keys).toEqual(["⌘", "⇧", "R"]);
+  });
+
+  it("opens a support email from the Contact pane", async () => {
+    window.kijiAPI.openExternal = vi.fn().mockResolvedValue(undefined) as typeof window.kijiAPI.openExternal;
+    render(<SettingsWindow />);
+    clickSidebarCategory("Contact");
+
+    fireEvent.click(screen.getByRole("button", { name: /@/ }));
+
+    await waitFor(() => {
+      expect(window.kijiAPI.openExternal).toHaveBeenCalledWith(expect.stringMatching(/^mailto:.+\?subject=/));
+    });
+    expect(await screen.findByText("Opened your default email client.")).toBeInTheDocument();
+  });
+
+  it("keeps a dragged surface opacity when switching panes and back", async () => {
+    render(<SettingsWindow />);
+    clickSidebarCategory("Appearance");
+
+    fireEvent.input(await screen.findByRole("slider", { name: "Surface opacity" }), { target: { value: "64" } });
+    clickSidebarCategory("General");
+    clickSidebarCategory("Appearance");
+
+    expect(screen.getByRole("slider", { name: "Surface opacity" })).toHaveValue("64");
+    expect(screen.getByText("64%")).toBeInTheDocument();
+  });
+  it("uses macOS-style line glyphs, never Material icons, in every pane", () => {
+    render(<SettingsWindow />);
+    const nav = screen.getByRole("navigation", { name: "Settings" });
+    const navGlyphs = Array.from(nav.querySelectorAll("svg.settings-glyph")).map((svg) => svg.getAttribute("data-glyph"));
+    expect(navGlyphs).toEqual(["gear", "appearance", "book", "keyboard", "sparkles", "envelope"]);
+
+    for (const category of ["General", "Appearance", "Reading", "Shortcuts", "Assistant", "Contact"]) {
+      clickSidebarCategory(category);
+      expect(document.querySelector(".settings-window .MuiSvgIcon-root")).toBeNull();
+    }
+  });
+
 });
