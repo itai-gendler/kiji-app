@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "app.yomilab/kiji",
+  "title": "KiJi",
+  "description": "Read your KiJi RSS library: stations, feeds, articles by time range, saved highlights, and the article you're reading.",
+  "version": "__VERSION__",
+  "websiteUrl": "https://kiji.yomilab.app",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "__MCPB_URL__",
+      "fileSha256": "__MCPB_SHA256__",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

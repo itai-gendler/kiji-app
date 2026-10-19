@@ -1,4 +1,4 @@
-mod export_format;
+pub(crate) mod export_format;
 mod export_service;
 mod sync_service;
 

@@ -11,6 +11,7 @@
     "build:debug:app": "CI=true tauri build --debug --bundles app",
     "build:web": "tsc && vite build",
     "build:collect-artifacts": "node scripts/collect-bundle-artifacts.mjs",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
     "dev:tauri": "tauri dev",
     "build:tauri": "npm run build",
     "preview": "vite preview",

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- New **Assistant** tab in Settings lets AI apps such as Claude, Cursor, VS Code and Codex read your KiJi library — including the article you're reading right now — so you can ask them to explain an article, summarize a station's week, or search your feeds. It's off until you turn it on, read-only, and you choose which stations, saved articles and notes are shared. One click adds KiJi to Claude Desktop, Cursor or VS Code.
+
 ### Fixed
 
 - On Windows and Linux, the close button of the full-window image viewer no longer sits under the window's own Close button, so closing an image no longer closes the window.

@@ -4,7 +4,7 @@ mod migrations;
 mod models;
 mod saved;
 pub(crate) mod schema;
-mod search;
+pub(crate) mod search;
 mod tags;
 
 pub use articles::{
@@ -78,6 +78,9 @@ struct DbStateInner {
     next_reader: AtomicUsize,
     search_reader: Mutex<Connection>,
     search_epoch: AtomicU64,
+    /// Dedicated read-only connection for assistant (MCP) requests so agent
+    /// queries never queue behind the UI readers or live search.
+    assistant_reader: Mutex<Connection>,
     previous_shutdown_unclean: bool,
 }
 
@@ -116,6 +119,7 @@ impl DbState {
             readers.push(Mutex::new(open_reader_connection(&path)?));
         }
         let search_reader = Mutex::new(open_reader_connection(&path)?);
+        let assistant_reader = Mutex::new(open_reader_connection(&path)?);
         let data_repair_version = read_user_version(&writer)?;
 
         let state = Self {
@@ -126,6 +130,7 @@ impl DbState {
                 next_reader: AtomicUsize::new(0),
                 search_reader,
                 search_epoch: AtomicU64::new(0),
+                assistant_reader,
                 previous_shutdown_unclean,
             }),
         };
@@ -300,6 +305,38 @@ impl DbState {
             .map_err(|error| format!("Database search task failed: {error}"))?
     }
 
+    /// Runs an assistant (MCP) request on its dedicated read-only connection.
+    /// Statements still running after `timeout` are interrupted so one heavy
+    /// agent query cannot hold the connection.
+    pub async fn assistant_read<T, F>(&self, timeout: Duration, action: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T, String> + Send + 'static,
+    {
+        let db = self.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            // A panic in an earlier request must not disable assistants until
+            // restart: the connection itself is still fine, so recover it.
+            let connection = db
+                .inner
+                .assistant_reader
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let deadline = std::time::Instant::now() + timeout;
+            connection
+                .progress_handler(
+                    SEARCH_PROGRESS_VM_OP_INTERVAL,
+                    Some(move || std::time::Instant::now() >= deadline),
+                )
+                .map_err(|error| format!("Failed to install assistant query timeout: {error}"))?;
+            let result = action(&connection);
+            let _ = connection.progress_handler::<fn() -> bool>(0, None);
+            result
+        })
+        .await
+        .map_err(|error| format!("Assistant database task failed: {error}"))?
+    }
+
     pub fn begin_search(&self) -> u64 {
         self.inner.search_epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
@@ -357,6 +394,7 @@ impl DbState {
                     Connection::open_in_memory().expect("open search reader"),
                 ),
                 search_epoch: AtomicU64::new(0),
+                assistant_reader: Mutex::new(Connection::open_in_memory().expect("open assistant reader")),
                 previous_shutdown_unclean: false,
             }),
         }
@@ -621,6 +659,7 @@ mod tests {
                 next_reader: AtomicUsize::new(0),
                 search_reader: Mutex::new(Connection::open_in_memory().expect("open search reader")),
                 search_epoch: AtomicU64::new(0),
+                assistant_reader: Mutex::new(Connection::open_in_memory().expect("open assistant reader")),
                 previous_shutdown_unclean: false,
             }),
         };
@@ -671,6 +710,7 @@ mod tests {
                 next_reader: AtomicUsize::new(0),
                 search_reader: Mutex::new(Connection::open_in_memory().expect("open search reader")),
                 search_epoch: AtomicU64::new(0),
+                assistant_reader: Mutex::new(Connection::open_in_memory().expect("open assistant reader")),
                 previous_shutdown_unclean: false,
             }),
         };

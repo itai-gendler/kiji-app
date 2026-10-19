@@ -30,6 +30,7 @@ import PaletteOutlinedIcon from '@mui/icons-material/PaletteOutlined';
 import MenuBookOutlinedIcon from '@mui/icons-material/MenuBookOutlined';
 import KeyboardOutlinedIcon from '@mui/icons-material/KeyboardOutlined';
 import ContactMailOutlinedIcon from '@mui/icons-material/ContactMailOutlined';
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import FormatLineSpacingIcon from '@mui/icons-material/FormatLineSpacing';
 import TextFieldsIcon from '@mui/icons-material/TextFields';
 import SpaceBarIcon from '@mui/icons-material/SpaceBar';
@@ -47,9 +48,10 @@ import defaultAppIconPreview from '@/assets/images/kiji-logo.png';
 import defaultDarkAppIconPreview from '@/assets/images/kiji-logo-dark.png';
 import rippleAppIconPreview from '@/assets/images/kiji-logo-ripple.png';
 import rippleDarkAppIconPreview from '@/assets/images/kiji-logo-ripple-dark.png';
+import { AssistantSettings } from './AssistantSettings';
 import './SettingsWindow.css';
 
-type ConfigCategory = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'contact';
+type ConfigCategory = 'general' | 'appearance' | 'reading' | 'shortcuts' | 'assistant' | 'contact';
 
 interface ShortcutConfig {
   id: string;
@@ -1462,6 +1464,8 @@ export const SettingsWindow: React.FC = () => {
               ))}
           </div>
         ), 'settings-content-shortcuts');
+      case 'assistant':
+        return renderPane('Assistant', <AssistantSettings />);
       case 'contact':
         return renderPane('Contact', (
           <div className="settings-section">
@@ -1607,6 +1611,15 @@ export const SettingsWindow: React.FC = () => {
                 <KeyboardOutlinedIcon fontSize="inherit" />
               </span>
               <span className="settings-nav-label">Shortcuts</span>
+            </button>
+            <button
+              className={`settings-nav-item ${activeCategory === 'assistant' ? 'is-active' : ''}`}
+              onClick={() => setActiveCategory('assistant')}
+            >
+              <span className="settings-nav-icon" aria-hidden="true">
+                <AutoAwesomeOutlinedIcon fontSize="inherit" />
+              </span>
+              <span className="settings-nav-label">Assistant</span>
             </button>
             <button
               className={`settings-nav-item ${activeCategory === 'contact' ? 'is-active' : ''}`}
